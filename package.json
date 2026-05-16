@@ -1,5 +1,5 @@
 {
-  "name": "draft-cli",
+  "name": "@drbaher/draft-cli",
   "version": "0.1.0",
   "description": "Fill placeholders in a legal-document template with parameter values. Part of the contract-operations suite.",
   "type": "module",
@@ -48,6 +48,9 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "jszip": "^3.10.1"

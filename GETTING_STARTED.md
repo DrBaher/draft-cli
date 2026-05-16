@@ -5,14 +5,14 @@ A 10-minute walkthrough of the main flows. Assumes you have Node 18+.
 ## 1. Install (or try without installing)
 
 ```sh
-npm install -g draft-cli
+npm install -g @drbaher/draft-cli
 draft --version    # → draft-cli 0.1.0
 ```
 
 To try without installing globally:
 
 ```sh
-npx draft-cli@latest --demo
+npx @drbaher/draft-cli@latest --demo
 ```
 
 ## 2. The 30-second demo

@@ -10,7 +10,7 @@ assignees: ''
 - `draft --version` output:
 - Node version (`node --version`):
 - OS:
-- Install method (`npm install -g draft-cli` / `npx draft-cli@latest` / cloned):
+- Install method (`npm install -g @drbaher/draft-cli` / `npx @drbaher/draft-cli@latest` / cloned):
 
 **What you ran**
 ```

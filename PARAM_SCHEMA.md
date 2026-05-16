@@ -9,7 +9,7 @@ after Q1–Q4 and D1–D4 review. Reviewer: DrBaher.
 ## 1. Stack & posture
 
 - **Runtime:** Node.js ≥ 18 (global `fetch`, `node:test`, `--env-file`-style behavior re-implemented inline so we don't require ≥ 20.6).
-- **Distribution:** `npm install -g draft-cli`, single-file `draft-cli.mjs` shebang executable.
+- **Distribution:** `npm install -g @drbaher/draft-cli`, single-file `draft-cli.mjs` shebang executable.
 - **Runtime dependencies (v1):** exactly one — `jszip` (MIT, zero transitive) for `.docx` unzip. Everything else uses Node's stdlib. LLM tier uses global `fetch` directly; no SDK dep.
 - **Local-first.** No telemetry. The only network call is the optional LLM tier and only when explicitly configured (see §3 T5).
 

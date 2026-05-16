@@ -455,7 +455,7 @@ export async function readStdin() {
 async function loadJSZip() {
   try { return (await import("jszip")).default; }
   catch {
-    const e = new Error("the 'jszip' package is required for .docx input.\nrun: npm install -g jszip  (or reinstall draft-cli)");
+    const e = new Error("the 'jszip' package is required for .docx input.\nrun: npm install -g jszip  (or reinstall @drbaher/draft-cli)");
     e.exitCode = EXIT.IO;
     throw e;
   }

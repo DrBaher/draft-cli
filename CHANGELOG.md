@@ -34,7 +34,7 @@ suite ([cli.drbaher.com](https://cli.drbaher.com)).
 - **Composable I/O**: stdin (`-`), stdout default, `--output PATH`,
   `template-vault get` integration for `<category>/<name>[@version]` refs.
 - **ANSI color** honors `NO_COLOR` and `FORCE_COLOR`; auto-disables off-TTY.
-- **`--demo`** flag for a zero-file 30-second first run (`npx draft-cli@latest --demo`).
+- **`--demo`** flag for a zero-file 30-second first run (`npx @drbaher/draft-cli@latest --demo`).
 - **`--completion bash|zsh`** flag that emits a hand-rolled shell completion
   script to stdout. Completes top-level flags, the `--syntax` value
   (`bracket`/`mustache`), the `--completion` shell name, and file paths
