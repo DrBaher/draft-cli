@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.3.2 — 2026-05-16
+
+### Fixed
+
+- **Publish auth: restored `NODE_AUTH_TOKEN` env block.** v0.3.1's
+  hotfix bumped `publish.yml` Node from 20 to 22 on the hypothesis
+  that npm CLI 11.5.1+ would auto-detect OIDC and ignore the
+  setup-node placeholder. It didn't: Node 22's npm 11.x still sent
+  the literal `XXXXX-XXXXX-XXXXX-XXXXX` placeholder and got the
+  same 404 from npm. Root cause is *not* Node version; either
+  `setup-node@v6` always writes the placeholder env into the
+  publish step, or npm CLI prefers the `.npmrc` token over OIDC
+  even when both are available. Under investigation.
+- **v0.3.1 tag exists on GitHub but did NOT publish to npm.** Skip
+  it. Registry latest is `0.2.0` until v0.3.2 ships.
+
+Pragmatic call: v0.3.2 ships via the bootstrap `NPM_TOKEN` path.
+Trusted Publisher stays configured on npm so the switch back to
+pure OIDC is a one-line change in `publish.yml` once we understand
+why npm CLI isn't using OIDC. `feedback_oidc_setup_node_v6_placeholder.md`
+in memory tracks the symptom + workarounds tried.
+
 ## 0.3.1 — 2026-05-16
 
 ### Fixed

@@ -40,3 +40,15 @@ jobs:
             exit 1
           fi
       - run: npm publish --provenance --access public
+        env:
+          # NPM_TOKEN fallback restored after pure-OIDC publish failed
+          # on both v0.3.0 (Node 20, npm 10.x) and v0.3.1 (Node 22, npm
+          # 11.x). setup-node@v6 with registry-url writes a placeholder
+          # NODE_AUTH_TOKEN into env, and npm CLI uses that placeholder
+          # rather than fetching an OIDC token — even when id-token:
+          # write is set and Trusted Publisher is configured. Root cause
+          # still under investigation (see memory:
+          # feedback_oidc_setup_node_v6_placeholder.md). Trusted Publisher
+          # stays configured on npm so the switch back to OIDC is a
+          # one-line change once the cause is understood.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

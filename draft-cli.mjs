@@ -70,7 +70,7 @@ import { fileURLToPath } from "node:url";
  */
 
 /** @type {string} */
-export const VERSION = "0.3.1";
+export const VERSION = "0.3.2";
 
 // ─── EXIT CODES ─────────────────────────────────────────────────────────────
 /**
