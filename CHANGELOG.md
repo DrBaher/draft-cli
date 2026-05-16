@@ -263,22 +263,25 @@ suite ([cli.drbaher.com](https://cli.drbaher.com)).
   that contains at least one letter. False positives are filtered with
   the schema file; false negatives in this domain are higher-cost.
 
-## Deferred (v2 candidates)
+## Deferred (post-v0.4.0 candidates)
 
-- **`.docx` output round-trip.** v1 writes plain markdown even from a
-  `.docx` input. Re-writing back into a `.docx` (preserving styles,
-  numbering, and run formatting) is a separate problem.
-- **Computed placeholders** (`[Effective Date + 2 years]`). The long-form
-  schema reserves a future `"computed"` field.
-- **Typed parameters** (`party`, `date`, `money` with format validation).
-  Schema reserves a future `"type"` field.
-- **LLM-assisted parameter inference from a deal description.** v1's T5
-  only suggests placeholders from template text — not from external prose
-  describing the deal.
-- **Cross-template parameter registry** (`parties.json` remembering
-  addresses, e-signature contacts, etc.). Additive — would layer
-  underneath `--params` in precedence.
-- **Multi-document bundles** (MSA + SOW sharing parameters in one call).
-  v1 is one document per invocation.
+Three of the original seven v1 "Deferred" entries shipped in v0.2.0,
+v0.3.2, and v0.4.0 (see entries above). The four remaining items are
+the next chunk of design work, with briefs in `V2_BRIEFS_REMAINING.md`:
+
+- **Positional addressing.** Disambiguate same-text placeholders by
+  index in the schema. The validated case: YC SAFE has
+  `$[_____________]` twice — once for the valuation cap, once for
+  the purchase amount. Smallest of the four (~150 LOC).
+- **Cross-template `parties.json` registry.** Declare parties once
+  with `ref:parties.<key>.<field>` references from schemas. Eliminates
+  duplicating party metadata across every template (~250 LOC).
+- **Multi-document bundles.** Resolve placeholders once and emit
+  multiple documents in one call (MSA + Order Form + DPA with shared
+  parameter values) (~250 LOC).
+- **LLM inference from a deal description.** `--from-deal <path>`
+  reads free-form deal text and asks the T5 LLM provider to fill the
+  schema's parameters. Inverse of the existing T5 detection (~250 LOC).
 - **`.docx` highlight detection beyond yellow/green/cyan/magenta.** v1
-  ignores other colors (black/white/none) by design.
+  ignores other colors (black/white/none) by design. Backlog, not in
+  V2_BRIEFS_REMAINING (low priority).
