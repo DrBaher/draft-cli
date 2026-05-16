@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.3.1 — 2026-05-16
+
+### Fixed
+
+- **`publish.yml` now uses Node 22 instead of Node 20.** npm
+  Trusted Publishing requires npm CLI 11.5.1 or later, which ships
+  with Node 22.14+. Node 20 (npm 10.x) silently falls back to
+  `NODE_AUTH_TOKEN` when configured for a registry, and to
+  `setup-node@v6`'s placeholder value (`XXXXX-...`) when the env
+  isn't set — producing a 404 from npm masking the actual 401.
+- **v0.3.0 tag exists on GitHub but did NOT publish to npm.** v0.3.0
+  was the first publish attempt without an `NPM_TOKEN` fallback
+  (PR #10 reverted the bootstrap); the npm-CLI-too-old issue
+  surfaced immediately. No package was uploaded. v0.3.1 is the
+  rebrand of v0.3.0's typed-parameter feature with the workflow
+  fix applied. Skip v0.3.0.
+
 ## 0.3.0 — 2026-05-16
 
 ### Added
