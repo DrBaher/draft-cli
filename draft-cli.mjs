@@ -70,7 +70,7 @@ import { fileURLToPath } from "node:url";
  */
 
 /** @type {string} */
-export const VERSION = "0.3.2";
+export const VERSION = "0.4.0";
 
 // ─── EXIT CODES ─────────────────────────────────────────────────────────────
 /**
@@ -914,6 +914,32 @@ export function parseSchema(parsed, sourceLabel = "<schema>") {
         e.exitCode = EXIT.IO;
         throw e;
       }
+      // v2 #2: computed placeholders. Optional `computed` block on long-form
+      // entries; { from: <other-key>, op: "+"|"-", value: "<n> <unit>" }.
+      let computed = null;
+      if (v.computed !== undefined) {
+        if (!v.computed || typeof v.computed !== "object" || Array.isArray(v.computed)) {
+          const e = new Error(`${sourceLabel}: long-form entry '${k}' has invalid 'computed' (must be an object)`);
+          e.exitCode = EXIT.IO;
+          throw e;
+        }
+        if (typeof v.computed.from !== "string") {
+          const e = new Error(`${sourceLabel}: long-form entry '${k}' computed.from must be a string (key of another schema entry)`);
+          e.exitCode = EXIT.IO;
+          throw e;
+        }
+        if (v.computed.op !== "+" && v.computed.op !== "-") {
+          const e = new Error(`${sourceLabel}: long-form entry '${k}' computed.op must be "+" or "-"`);
+          e.exitCode = EXIT.IO;
+          throw e;
+        }
+        if (typeof v.computed.value !== "string") {
+          const e = new Error(`${sourceLabel}: long-form entry '${k}' computed.value must be a string (duration like "2 years")`);
+          e.exitCode = EXIT.IO;
+          throw e;
+        }
+        computed = { from: v.computed.from, op: v.computed.op, value: v.computed.value };
+      }
       entries[k] = {
         aliases: v.aliases.slice(),
         required: v.required !== false,
@@ -924,6 +950,7 @@ export function parseSchema(parsed, sourceLabel = "<schema>") {
         type: typeof v.type === "string" ? v.type : null,
         format: typeof v.format === "string" ? v.format : null,
         currency: typeof v.currency === "string" ? v.currency : null,
+        computed,
       };
     } else {
       if (!Array.isArray(v)) {
@@ -931,7 +958,30 @@ export function parseSchema(parsed, sourceLabel = "<schema>") {
         e.exitCode = EXIT.IO;
         throw e;
       }
-      entries[k] = { aliases: v.slice(), required: true, default: null, type: null, format: null, currency: null };
+      entries[k] = { aliases: v.slice(), required: true, default: null, type: null, format: null, currency: null, computed: null };
+    }
+  }
+  // v2 #2: validate computed references (point to existing keys; no cycles).
+  for (const [key, entry] of Object.entries(entries)) {
+    if (!entry.computed) continue;
+    if (!entries[entry.computed.from]) {
+      const e = new Error(`${sourceLabel}: '${key}'.computed.from = "${entry.computed.from}" does not match any other key in this schema`);
+      e.exitCode = EXIT.IO;
+      throw e;
+    }
+    // Walk the computed.from chain from this key; bail if we revisit.
+    const visited = [key];
+    let cursor = entry.computed.from;
+    while (cursor) {
+      if (visited.includes(cursor)) {
+        const e = new Error(`${sourceLabel}: computed cycle detected: ${[...visited, cursor].join(" → ")}`);
+        e.exitCode = EXIT.IO;
+        throw e;
+      }
+      visited.push(cursor);
+      const next = entries[cursor];
+      if (!next || !next.computed) break;
+      cursor = next.computed.from;
     }
   }
   return { form: long ? "long" : "short", entries };
@@ -1075,6 +1125,7 @@ function assemble(tier, hits, schema, warnings, fromLlm = false) {
         type: resolved.type,
         format: resolved.format,
         currency: resolved.currency,
+        computed: resolved.computed,
         hits: [],
       });
     }
@@ -1097,6 +1148,7 @@ function resolveKey(hit, schema, fromLlm) {
           type: entry.type || null,
           format: entry.format || null,
           currency: entry.currency || null,
+          computed: entry.computed || null,
         };
       }
     }
@@ -1104,7 +1156,7 @@ function resolveKey(hit, schema, fromLlm) {
   }
   const key = fromLlm && hit.suggested_key ? hit.suggested_key : canonicalKey(hit.inner);
   if (!validKey(key)) return null;
-  return { key, required: true, default: null, aliases: [hit.inner], type: null, format: null, currency: null };
+  return { key, required: true, default: null, aliases: [hit.inner], type: null, format: null, currency: null, computed: null };
 }
 
 // ─── VALUE RESOLUTION (CLI > JSON > prompt > default) ───────────────────────
@@ -1177,7 +1229,9 @@ export async function resolveValues(placeholders, opts, paramsObj, { prompter = 
       sources[p.key] = "default";
       continue;
     }
-    if (p.required) missing.push(p);
+    // v2 #2: computed placeholders auto-resolve later via `computeValues`.
+    // Don't count them as missing here even though no source supplied a value.
+    if (p.required && !p.computed) missing.push(p);
   }
   return { resolved, missing, sources };
 }
@@ -1253,6 +1307,46 @@ export function formatDateValue(date, format) {
     if (token === "d") return String(d);
     return token;
   });
+}
+
+/**
+ * Parse a duration string for computed placeholders (v2 #2).
+ * Accepts `<n> <unit>` where unit is one of `day | week | month | year`
+ * (singular or plural). Returns an object with the unit as plural key.
+ * Returns `null` on parse failure.
+ *
+ * @param {string} raw
+ * @returns {{ days?: number, weeks?: number, months?: number, years?: number } | null}
+ */
+export function parseDuration(raw) {
+  const m = /^(\d+)\s+(day|week|month|year)s?$/i.exec(String(raw).trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  if (!isFinite(n) || n < 0) return null;
+  const unit = m[2].toLowerCase();
+  return { [`${unit}s`]: n };
+}
+
+/**
+ * Add or subtract a duration from a Date. Uses UTC field manipulation
+ * via `setUTC*` methods, so day/month/year overflow follows JavaScript's
+ * default behavior (e.g. Jan 31 + 1 month = Mar 3, not Feb 28). For
+ * legal-doc use cases ("2 years from effective date") this is the
+ * expected behavior; anniversary dates are unambiguous.
+ *
+ * @param {Date} date
+ * @param {"+"|"-"} op
+ * @param {{ days?: number, weeks?: number, months?: number, years?: number }} dur
+ * @returns {Date}
+ */
+export function addDuration(date, op, dur) {
+  const sign = op === "-" ? -1 : 1;
+  const d = new Date(date.getTime());
+  if (dur.years) d.setUTCFullYear(d.getUTCFullYear() + sign * dur.years);
+  if (dur.months) d.setUTCMonth(d.getUTCMonth() + sign * dur.months);
+  if (dur.weeks) d.setUTCDate(d.getUTCDate() + sign * dur.weeks * 7);
+  if (dur.days) d.setUTCDate(d.getUTCDate() + sign * dur.days);
+  return d;
 }
 
 /**
@@ -1394,6 +1488,91 @@ export function normalizeTypedValues(placeholders, resolved) {
   return { ok: errors.length === 0, errors, normalized };
 }
 
+// ─── COMPUTED PLACEHOLDERS (v2 #2) ──────────────────────────────────────────
+// Schema entries can declare a `computed` block referencing another key in
+// the same schema:
+//
+//   "term_end": { "aliases": ["Term End"], "type": "date",
+//                 "computed": { "from": "effective_date", "op": "+", "value": "2 years" } }
+//
+// At substitution time, if no value was supplied via CLI/--params/interactive/
+// default, the computed entry's value is derived from its `from` placeholder.
+// CLI/--params explicit values still win — computed only fills the gap.
+//
+// Cycles in `from` references are detected at parseSchema time. Missing-`from`
+// errors and bad-duration errors surface at compute time with a per-key
+// message; like typed-param errors, all errors are collected before returning
+// so the user sees every failure at once.
+
+/**
+ * Run computed-placeholder evaluation on already-resolved values. Mutates
+ * `resolved` in place with computed values for any placeholder that has a
+ * `computed` block and no existing value. Iterative — handles chains
+ * (B from A, C from B) without an explicit topological sort.
+ *
+ * @param {Placeholder[]} placeholders
+ * @param {Object<string,string>} resolved
+ * @returns {{ ok: boolean, errors: Array<{ key: string, message: string }>, computed: Object<string,{from: string, op: string, value: string, to: string}> }}
+ */
+export function computeValues(placeholders, resolved) {
+  const errors = [];
+  const computed = {};
+  const pending = placeholders.filter(
+    (p) => p.computed && resolved[p.key] === undefined
+  );
+  if (pending.length === 0) return { ok: true, errors: [], computed: {} };
+
+  let progress = true;
+  while (progress && pending.length > 0) {
+    progress = false;
+    for (let i = pending.length - 1; i >= 0; i--) {
+      const p = pending[i];
+      const fromKey = p.computed.from;
+      const fromValue = resolved[fromKey];
+      if (fromValue === undefined) continue;
+      try {
+        const result = computeOneValue(p, fromValue);
+        resolved[p.key] = result;
+        computed[p.key] = { from: fromKey, op: p.computed.op, value: p.computed.value, to: result };
+        pending.splice(i, 1);
+        progress = true;
+      } catch (e) {
+        errors.push({ key: p.key, message: e.message });
+        pending.splice(i, 1);
+      }
+    }
+  }
+  for (const p of pending) {
+    errors.push({
+      key: p.key,
+      message: `cannot compute: depends on "${p.computed.from}" which is unresolved`,
+    });
+  }
+  return { ok: errors.length === 0, errors, computed };
+}
+
+function computeOneValue(p, fromValue) {
+  // v2: dates only. Future expansions (money math, string concat) would
+  // dispatch on placeholder type here.
+  const date = parseDateValue(fromValue);
+  if (!date) {
+    throw new Error(
+      `cannot parse "${fromValue}" as a date (from "${p.computed.from}"). ` +
+      `Computed placeholders need a date-shaped source value.`
+    );
+  }
+  const dur = parseDuration(p.computed.value);
+  if (!dur) {
+    throw new Error(
+      `cannot parse duration "${p.computed.value}". Expected ` +
+      `"<n> <unit>" where unit is day, week, month, or year (singular ` +
+      `or plural).`
+    );
+  }
+  const result = addDuration(date, p.computed.op, dur);
+  return formatDateValue(result, p.format || "MMMM d, yyyy");
+}
+
 async function nodePrompter(placeholder) {
   if (!process.stdin.isTTY) return null;
   const rl = createInterface({ input: process.stdin, output: process.stderr });
@@ -1416,9 +1595,18 @@ async function nodePrompter(placeholder) {
 export function findOrphans(schema, placeholders) {
   if (!schema) return [];
   const present = new Set(placeholders.map((p) => p.key));
+  // v2 #2: an entry that another entry's `computed.from` points at is
+  // legitimately not in the template — it's a "feeder" used only for
+  // computation. Exempt those from the orphan check.
+  const computedFromTargets = new Set();
+  for (const entry of Object.values(schema.entries)) {
+    if (entry.computed && entry.computed.from) computedFromTargets.add(entry.computed.from);
+  }
   const orphans = [];
   for (const [key, entry] of Object.entries(schema.entries)) {
-    if (!present.has(key)) orphans.push({ key, aliases: entry.aliases.slice() });
+    if (present.has(key)) continue;
+    if (computedFromTargets.has(key)) continue;
+    orphans.push({ key, aliases: entry.aliases.slice() });
   }
   return orphans;
 }
@@ -1647,6 +1835,20 @@ export async function cmdValidate(opts, input, schema, paramsObj, envObj, { fetc
     }
     return EXIT.VALIDATION;
   }
+  // v2 #2: computed-placeholder validation (same gate as cmdDraft).
+  const computeCheck = computeValues(result.placeholders, resolved);
+  if (!computeCheck.ok) {
+    for (const ce of computeCheck.errors) {
+      err.write(paint(`error: computed value failed for "${ce.key}": ${ce.message}\n`, "red", err));
+    }
+    if (opts.json) {
+      out.write(JSON.stringify({
+        ok: false,
+        computed_errors: computeCheck.errors.map(({ key, message }) => ({ key, message })),
+      }, null, 2) + "\n");
+    }
+    return EXIT.VALIDATION;
+  }
   if (opts.json) {
     out.write(JSON.stringify({ ok: true, resolved: Object.keys(resolved), sources }, null, 2) + "\n");
   } else {
@@ -1723,6 +1925,19 @@ export async function cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher
   if (!typeCheck.ok) {
     for (const te of typeCheck.errors) {
       err.write(paint(`error: type validation failed for "${te.key}": ${te.message}\n`, "red", err));
+    }
+    return EXIT.VALIDATION;
+  }
+
+  // v2 #2: computed placeholders. Fill any computed entries whose value
+  // wasn't already supplied via CLI / --params / --interactive / default.
+  // Runs after typed normalization so the source values are in canonical
+  // form (e.g. a "date" type is already in the format string before we
+  // parse it back for arithmetic).
+  const computeCheck = computeValues(result.placeholders, resolved);
+  if (!computeCheck.ok) {
+    for (const ce of computeCheck.errors) {
+      err.write(paint(`error: computed value failed for "${ce.key}": ${ce.message}\n`, "red", err));
     }
     return EXIT.VALIDATION;
   }

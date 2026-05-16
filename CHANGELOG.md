@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.4.0 — 2026-05-16
+
+### Added
+
+- **Computed placeholders.** Long-form schema entries can declare a
+  `computed` block referencing another key:
+  ```json
+  "term_end": {
+    "aliases": ["Term End"],
+    "type": "date",
+    "format": "MMMM d, yyyy",
+    "computed": { "from": "effective_date", "op": "+", "value": "2 years" }
+  }
+  ```
+  At substitution time, if no value was supplied via CLI / `--params`
+  / interactive / default, the computed entry's value is derived from
+  the `from` placeholder. Explicit CLI / `--params` values still win —
+  computed only fills the gap. Q2.1 locked: expression syntax lives
+  in the schema only, not in template text — keeps T1 detection
+  unchanged. Q2.2 locked: v0.4.0 supports date arithmetic only
+  (`+` / `-` with `<n> day|week|month|year[s]` durations). Money
+  math and string concat deferred to a future release.
+- **Schema-time cycle detection.** `parseSchema` throws if any
+  `computed.from` chain revisits a key (e.g. `a → b → a`), or if
+  `computed.from` references a key that doesn't exist in the same
+  schema. Catches misconfiguration before substitution starts.
+- **Orphan-check exemption.** Schema entries that are referenced only
+  as another entry's `computed.from` source (and never appear as
+  detected aliases in the template) are no longer reported as
+  orphans. They're "feeders" — declared so a computed entry can
+  reference them, even though the template doesn't show them.
+- **New public API:** `parseDuration(raw)`, `addDuration(date, op, dur)`,
+  `computeValues(placeholders, resolved)`.
+
+### Schema-contract change
+
+`PARAM_SCHEMA.md` §5 gains a "Computed placeholders" section. Long-
+form entries can now include a `computed: { from, op, value }` block;
+short form is unchanged. v0.4.0 schemas are forward-compatible with
+v0.3.x readers (which will silently ignore the `computed` field as
+unrecognized long-form metadata, treating the entry as a regular
+placeholder — but then the user has to supply a value, since v0.3.x
+won't compute one).
+
 ## 0.3.2 — 2026-05-16
 
 ### Fixed

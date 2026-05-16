@@ -270,6 +270,67 @@ Programmatic API for drivers: `parseDateValue`, `formatDateValue`,
 `parseMoneyValue`, `formatMoneyValue`, `normalizeTypedValue`,
 `normalizeTypedValues`.
 
+### Computed placeholders (v0.4.0, opt-in)
+
+Long-form entries can declare a `computed` block referencing another
+key in the same schema. At substitution time, if no value was
+supplied via CLI / `--params` / interactive / default, the computed
+entry's value is derived from the `from` placeholder via simple
+date arithmetic. Explicit user-supplied values still win — computed
+only fills the gap.
+
+```json
+{
+  "_meta": { "schema_version": 1 },
+  "effective_date": {
+    "aliases": ["Effective Date"],
+    "type": "date", "format": "MMMM d, yyyy"
+  },
+  "term_end": {
+    "aliases": ["Term End"],
+    "type": "date", "format": "MMMM d, yyyy",
+    "computed": { "from": "effective_date", "op": "+", "value": "2 years" }
+  }
+}
+```
+
+| Field   | Type     | Required | Notes |
+| ------- | -------- | -------- | ----- |
+| `from`  | string   | yes      | Key of another entry in the same schema. Schema validation rejects unknown references. |
+| `op`    | `"+"`/`"-"` | yes   | Add or subtract the duration from the `from` value. |
+| `value` | string   | yes      | Duration in `<n> <unit>` form, where `<unit>` is `day`, `week`, `month`, or `year` (singular or plural; case-insensitive). |
+
+**Q2.1 locked:** Expression syntax lives in the schema, **not** in
+template text. T1 bracket detection treats `[Term End]` as an
+ordinary placeholder; the schema-level `computed` block decides how
+its value is derived.
+
+**Q2.2 locked:** v0.4.0 supports **date arithmetic only**. Money
+math (`+ 10%`) and string concat (`Party A + " Inc."`) are deferred
+to a future release once the date-arithmetic design is proven against
+real templates.
+
+**Resolution order:** value resolution → typed-parameter normalization
+(§ above) → computed-placeholder evaluation → substitution.
+
+**Cycle and reference safety:** `parseSchema` walks every
+`computed.from` chain and throws at load time if a chain revisits a
+key (e.g. `a → b → a`) or references a non-existent key. Caught
+before substitution.
+
+**Orphan-check exemption:** an entry that's referenced only as
+another entry's `computed.from` (never appears in the template) is
+**not** an orphan. It's a feeder used solely for computation.
+
+**Format inheritance:** the computed entry's `format` field is used
+to render the result. If the computed entry doesn't declare `format`,
+the default `MMMM d, yyyy` applies. The `from` entry's `format` is
+used for parsing the source value (since by then it's normalized to
+that format).
+
+Programmatic API for drivers: `parseDuration`, `addDuration`,
+`computeValues`.
+
 ### Orphan handling (Q4 locked)
 
 Schema declares a key whose alias list matches no detected phrase →
