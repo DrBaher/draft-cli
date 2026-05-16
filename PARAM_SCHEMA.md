@@ -331,6 +331,63 @@ that format).
 Programmatic API for drivers: `parseDuration`, `addDuration`,
 `computeValues`.
 
+### Positional addressing (v0.5.0, opt-in)
+
+Some templates have the same placeholder text appearing multiple times
+with *different* semantic roles. The validated YC SAFE case:
+`$[_____________]` appears twice — once as valuation cap, once as
+purchase amount. Long-form entries can declare a `positions` array
+that splits each occurrence into its own canonical-keyed placeholder.
+
+```json
+{
+  "_meta": { "schema_version": 1 },
+  "blank": {
+    "aliases": ["_____________"],
+    "type": "money", "currency": "USD",
+    "positions": [
+      { "role": "valuation_cap" },
+      { "role": "purchase_amount" }
+    ]
+  }
+}
+```
+
+CLI uses standard `--<role>` flags (no special `@N` grammar):
+
+```sh
+draft safe.docx --valuation-cap 5000000 --purchase-amount 100000
+```
+
+**Q1.1 locked:** index base is 0 internally; the CLI uses role names,
+not numeric indices.
+
+**Q1.2 locked:** count mismatch (schema declares N positions but
+detection finds M ≠ N occurrences of the alias) is a **hard error**
+(exit 4). The schema and the template are out of sync; silently filling
+or trimming hides the bug.
+
+**Q1.3 locked:** there is no bare-key CLI variant (`--<parent-key>
+VALUE` with no role). The CLI uses role-named flags. Bare `--<role>`
+targets that role's position; values can also come from `--params`
+JSON keyed by role, or `--interactive`.
+
+**Tier constraint:** positional addressing only works at T1 (bracket)
+or T2 (mustache). T3/T4/T5 detection paths don't carry per-hit byte
+indices needed for position-specific substitution; if a positional
+schema entry's aliases are matched by those tiers, the command exits 4
+with a clear error.
+
+**Validation:** at schema parse time, positions must be a non-empty
+array of `{role: string}` objects; roles must be valid snake_case keys
+and unique within the entry.
+
+Programmatic API: positions flow through detection and resolution as
+normal `Placeholder` objects with `position_parent` (parent schema key)
+and `position_index` (0-based) fields. `substitute` switches to
+byte-index substitution for these, which `substituteDocxXml` does not
+currently support.
+
 ### Orphan handling (Q4 locked)
 
 Schema declares a key whose alias list matches no detected phrase →

@@ -70,7 +70,7 @@ import { fileURLToPath } from "node:url";
  */
 
 /** @type {string} */
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 // ─── EXIT CODES ─────────────────────────────────────────────────────────────
 /**
@@ -914,6 +914,40 @@ export function parseSchema(parsed, sourceLabel = "<schema>") {
         e.exitCode = EXIT.IO;
         throw e;
       }
+      // v2 #7: positional addressing. Optional `positions` array; each
+      // element declares a role (its own canonical key) for the Nth detected
+      // occurrence of this entry's aliases. Roles must be valid keys and
+      // unique within the entry.
+      let positions = null;
+      if (v.positions !== undefined) {
+        if (!Array.isArray(v.positions) || v.positions.length === 0) {
+          const e = new Error(`${sourceLabel}: long-form entry '${k}' positions must be a non-empty array`);
+          e.exitCode = EXIT.IO;
+          throw e;
+        }
+        const roleSet = new Set();
+        positions = [];
+        for (let pi = 0; pi < v.positions.length; pi++) {
+          const pos = v.positions[pi];
+          if (!pos || typeof pos !== "object" || Array.isArray(pos)) {
+            const e = new Error(`${sourceLabel}: '${k}'.positions[${pi}] must be an object with a 'role' string`);
+            e.exitCode = EXIT.IO;
+            throw e;
+          }
+          if (typeof pos.role !== "string" || !validKey(pos.role)) {
+            const e = new Error(`${sourceLabel}: '${k}'.positions[${pi}].role must be a valid snake_case key`);
+            e.exitCode = EXIT.IO;
+            throw e;
+          }
+          if (roleSet.has(pos.role)) {
+            const e = new Error(`${sourceLabel}: '${k}'.positions has duplicate role '${pos.role}'`);
+            e.exitCode = EXIT.IO;
+            throw e;
+          }
+          roleSet.add(pos.role);
+          positions.push({ role: pos.role });
+        }
+      }
       // v2 #2: computed placeholders. Optional `computed` block on long-form
       // entries; { from: <other-key>, op: "+"|"-", value: "<n> <unit>" }.
       let computed = null;
@@ -951,6 +985,7 @@ export function parseSchema(parsed, sourceLabel = "<schema>") {
         format: typeof v.format === "string" ? v.format : null,
         currency: typeof v.currency === "string" ? v.currency : null,
         computed,
+        positions,
       };
     } else {
       if (!Array.isArray(v)) {
@@ -958,7 +993,7 @@ export function parseSchema(parsed, sourceLabel = "<schema>") {
         e.exitCode = EXIT.IO;
         throw e;
       }
-      entries[k] = { aliases: v.slice(), required: true, default: null, type: null, format: null, currency: null, computed: null };
+      entries[k] = { aliases: v.slice(), required: true, default: null, type: null, format: null, currency: null, computed: null, positions: null };
     }
   }
   // v2 #2: validate computed references (point to existing keys; no cycles).
@@ -1126,6 +1161,7 @@ function assemble(tier, hits, schema, warnings, fromLlm = false) {
         format: resolved.format,
         currency: resolved.currency,
         computed: resolved.computed,
+        positions: resolved.positions,
         hits: [],
       });
     }
@@ -1133,7 +1169,52 @@ function assemble(tier, hits, schema, warnings, fromLlm = false) {
     entry.occurrences += 1;
     entry.hits.push(h);
   }
-  return { tier, placeholders: [...byKey.values()], warnings, unmapped };
+  // v2 #7: expand positional entries. Each detected occurrence becomes a
+  // separate role-keyed placeholder. Count mismatch → positional_errors;
+  // tier T3/T4/T5 (no per-hit index) → positional_errors (not supported).
+  const placeholders = [];
+  const positional_errors = [];
+  const detected_schema_keys = [...byKey.keys()];
+  for (const p of byKey.values()) {
+    if (!p.positions) {
+      placeholders.push(p);
+      continue;
+    }
+    if (tier !== "bracket" && tier !== "mustache") {
+      positional_errors.push({
+        key: p.key,
+        reason: `tier '${tier}' does not carry per-hit index info; positional addressing requires T1 (bracket) or T2 (mustache) detection`,
+      });
+      continue;
+    }
+    if (p.hits.length !== p.positions.length) {
+      positional_errors.push({
+        key: p.key,
+        reason: `schema declares ${p.positions.length} position(s) but detected ${p.hits.length} occurrence(s) of "${p.aliases[0] || p.key}"`,
+      });
+      continue;
+    }
+    for (let i = 0; i < p.positions.length; i++) {
+      placeholders.push({
+        key: p.positions[i].role,
+        first_seen_as: p.hits[i].inner,
+        occurrences: 1,
+        tier,
+        required: true,
+        default: null,
+        aliases: p.aliases.slice(),
+        type: p.type,
+        format: p.format,
+        currency: p.currency,
+        computed: null,
+        positions: null, // expanded; no further re-expansion
+        hits: [p.hits[i]],
+        position_parent: p.key,
+        position_index: i,
+      });
+    }
+  }
+  return { tier, placeholders, warnings, unmapped, positional_errors, detected_schema_keys };
 }
 
 function resolveKey(hit, schema, fromLlm) {
@@ -1149,6 +1230,7 @@ function resolveKey(hit, schema, fromLlm) {
           format: entry.format || null,
           currency: entry.currency || null,
           computed: entry.computed || null,
+          positions: entry.positions || null,
         };
       }
     }
@@ -1156,7 +1238,7 @@ function resolveKey(hit, schema, fromLlm) {
   }
   const key = fromLlm && hit.suggested_key ? hit.suggested_key : canonicalKey(hit.inner);
   if (!validKey(key)) return null;
-  return { key, required: true, default: null, aliases: [hit.inner], type: null, format: null, currency: null, computed: null };
+  return { key, required: true, default: null, aliases: [hit.inner], type: null, format: null, currency: null, computed: null, positions: null };
 }
 
 // ─── VALUE RESOLUTION (CLI > JSON > prompt > default) ───────────────────────
@@ -1592,9 +1674,17 @@ async function nodePrompter(placeholder) {
  * @param {Placeholder[]} placeholders
  * @returns {Array<{key: string, aliases: string[]}>}
  */
-export function findOrphans(schema, placeholders) {
+export function findOrphans(schema, placeholders, detectedSchemaKeys = null) {
   if (!schema) return [];
-  const present = new Set(placeholders.map((p) => p.key));
+  // v2 #7: for positional entries we check `detectedSchemaKeys` (the
+  // pre-expansion key set) since the placeholders list shows role keys,
+  // not the parent positional key. When detectedSchemaKeys is not given
+  // (older callers / no schema-expansion path), fall back to the
+  // placeholders list — same behavior as before v0.5.0.
+  const presentForPositional = detectedSchemaKeys
+    ? new Set(detectedSchemaKeys)
+    : new Set(placeholders.map((p) => p.key));
+  const presentForRegular = new Set(placeholders.map((p) => p.key));
   // v2 #2: an entry that another entry's `computed.from` points at is
   // legitimately not in the template — it's a "feeder" used only for
   // computation. Exempt those from the orphan check.
@@ -1604,8 +1694,9 @@ export function findOrphans(schema, placeholders) {
   }
   const orphans = [];
   for (const [key, entry] of Object.entries(schema.entries)) {
-    if (present.has(key)) continue;
     if (computedFromTargets.has(key)) continue;
+    const present = entry.positions ? presentForPositional : presentForRegular;
+    if (present.has(key)) continue;
     orphans.push({ key, aliases: entry.aliases.slice() });
   }
   return orphans;
@@ -1625,8 +1716,30 @@ export function findOrphans(schema, placeholders) {
  * @returns {string} the substituted body.
  */
 export function substitute(body, placeholders, values, tier) {
+  // v2 #7: positional placeholders (`position_index !== undefined`) substitute
+  // at a specific byte index, not by global replace. Collect them first,
+  // apply in reverse-index order so earlier hits' indices stay stable. Then
+  // the remaining (non-positional) placeholders use the original
+  // replaceAll/regex logic, which is safe because positional hits all share
+  // the same alias text — and after the index-based substitution, only the
+  // exact bytes at each position have been replaced.
   let out = body;
+  const positionalSubs = [];
   for (const p of placeholders) {
+    if (p.position_index === undefined) continue;
+    const v = values[p.key];
+    if (v === undefined) continue;
+    for (const h of p.hits) {
+      if (typeof h.index !== "number") continue;
+      positionalSubs.push({ index: h.index, length: h.match.length, value: v });
+    }
+  }
+  positionalSubs.sort((a, b) => b.index - a.index);
+  for (const s of positionalSubs) {
+    out = out.slice(0, s.index) + s.value + out.slice(s.index + s.length);
+  }
+  for (const p of placeholders) {
+    if (p.position_index !== undefined) continue; // already handled above
     const v = values[p.key];
     if (v === undefined) continue;
     for (const h of p.hits) {
@@ -1805,7 +1918,14 @@ export async function cmdValidate(opts, input, schema, paramsObj, envObj, { fetc
     err.write(paint("error: no placeholders detected by any tier\n", "red", err));
     return EXIT.VALIDATION;
   }
-  const orphans = findOrphans(schema, result.placeholders);
+  // v2 #7: positional addressing errors (count mismatch, unsupported tier).
+  if (result.positional_errors && result.positional_errors.length > 0) {
+    for (const pe of result.positional_errors) {
+      err.write(paint(`error: positional placeholder "${pe.key}": ${pe.reason}\n`, "red", err));
+    }
+    return EXIT.VALIDATION;
+  }
+  const orphans = findOrphans(schema, result.placeholders, result.detected_schema_keys);
   if (orphans.length > 0) {
     for (const o of orphans) {
       err.write(paint(`error: schema declares "${o.key}" with aliases [${o.aliases.map(a => `"${a}"`).join(",")}], but no matching phrase was detected by tier '${result.tier}'.\n`, "red", err));
@@ -1891,8 +2011,15 @@ export async function cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher
     }
   }
 
+  // v2 #7: positional addressing errors (count mismatch, unsupported tier).
+  if (result.positional_errors && result.positional_errors.length > 0) {
+    for (const pe of result.positional_errors) {
+      err.write(paint(`error: positional placeholder "${pe.key}": ${pe.reason}\n`, "red", err));
+    }
+    return EXIT.VALIDATION;
+  }
   // Orphan check.
-  const orphans = findOrphans(schema, result.placeholders);
+  const orphans = findOrphans(schema, result.placeholders, result.detected_schema_keys);
   if (orphans.length > 0) {
     for (const o of orphans) {
       err.write(paint(`error: schema declares "${o.key}" with aliases [${o.aliases.map(a => `"${a}"`).join(",")}], but no matching phrase was detected by tier '${result.tier}'.\n`, "red", err));

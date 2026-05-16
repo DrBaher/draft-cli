@@ -4,6 +4,58 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.5.0 — 2026-05-16
+
+### Added
+
+- **Positional addressing** for same-text placeholders with different
+  semantic roles. Long-form schema entries can declare a `positions`
+  array; each position gets its own canonical key (via `role`), so the
+  CLI uses standard `--<role>` flags. Validated against the YC SAFE
+  `$[_____________] × 2` case (valuation cap vs. purchase amount).
+  ```json
+  "blank": {
+    "aliases": ["_____________"],
+    "type": "money", "currency": "USD",
+    "positions": [
+      { "role": "valuation_cap" },
+      { "role": "purchase_amount" }
+    ]
+  }
+  ```
+  ```sh
+  draft safe.docx \
+    --valuation-cap 5000000 \
+    --purchase-amount 100000
+  ```
+  Decisions locked (V2_BRIEFS_REMAINING Q1.1–Q1.3):
+  - **Q1.1 Index base**: schema positions are 0-indexed internally;
+    the CLI uses role names, not numeric indices.
+  - **Q1.2 Length mismatch**: schema declares N positions but
+    detection finds M ≠ N occurrences → hard error (exit 4).
+  - **Q1.3 Bare-key CLI**: a `--<role>` flag targets its specific
+    position; values still flow through `--params` JSON or
+    `--interactive` normally.
+
+### Constraints
+
+- Positional addressing only works at tier T1 (bracket) and T2
+  (mustache) — those tiers carry per-hit byte indices needed for
+  position-specific substitution. T3 (docx-highlight), T4 (heuristic),
+  T5 (LLM) raise a positional error if a positional schema entry's
+  aliases are matched by them. `.docx` templates with `[X]` brackets
+  that fire T1 still work; `.docx` templates that rely on T3 highlights
+  for the same alias do not.
+
+### Schema-contract change
+
+`PARAM_SCHEMA.md` §5 gains a "Positional addressing" subsection. Long-
+form entries can now include a `positions` array; short form is
+unchanged. Forward-compatible with v0.4.x readers — they'll ignore the
+unknown field and treat the entry as a regular non-positional
+placeholder (which means the first detected occurrence wins for
+substitution, and ambiguity is unresolved).
+
 ## 0.4.0 — 2026-05-16
 
 ### Added
