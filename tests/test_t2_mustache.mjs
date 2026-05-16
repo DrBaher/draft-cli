@@ -30,3 +30,10 @@ test("hasBothConventions detects mixed templates", () => {
   assert.equal(hasBothConventions("[Party A] only"), false);
   assert.equal(hasBothConventions("{{Party A}} only"), false);
 });
+
+test("detectMustache: schema aliases rescue heuristic-rejected runs", () => {
+  // {{COMPANY}} is all-caps so isMustachePlaceholder rejects it by default.
+  const body = "Hi {{COMPANY}}, welcome.";
+  assert.equal(detectMustache(body).length, 0);
+  assert.equal(detectMustache(body, new Set(["COMPANY"])).length, 1);
+});

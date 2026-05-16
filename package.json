@@ -14,7 +14,12 @@
     "draft-cli.mjs",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "ARCHITECTURE.md",
+    "FAQ.md",
+    "GETTING_STARTED.md",
+    "PARAM_SCHEMA.md",
+    "SECURITY.md"
   ],
   "scripts": {
     "test": "node --test tests/test_*.mjs",

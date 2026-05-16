@@ -188,6 +188,15 @@ If present, the schema is **authoritative**: only declared parameters
 substitute. Anything else the cascade detects is left untouched and
 listed in `--why` as `unmapped`.
 
+**Schema rescue (T1/T2 only).** When a schema declares a phrase that the
+heuristic detection rule would reject (e.g. all-caps `[COMPANY]`, all-
+underscore `[_____________]`, snake_case `[party_a]`), the schema's
+alias list is consulted during detection and rescues that phrase.
+Without this, a schema-declared alias would be silently dropped before
+ever reaching the resolution step. The rescue applies only to bracket
+(T1) and mustache (T2) tiers; T3/T4/T5 use text-based detection that
+doesn't need rescuing.
+
 ### Short form (default in docs)
 
 ```json

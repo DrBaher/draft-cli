@@ -379,13 +379,16 @@ export function isBracketPlaceholder(inner) {
   return true;
 }
 
-// Returns array of { match: "[Party A]", inner: "Party A", index }
-export function detectBracket(body) {
+// Returns array of { match: "[Party A]", inner: "Party A", index }.
+// schemaAliases (optional) is a Set of phrase strings; bracketed runs whose
+// inner matches a schema alias are admitted even if the heuristic rule would
+// reject them (lets schema rescue [COMPANY], [_____________], etc.).
+export function detectBracket(body, schemaAliases = new Set()) {
   const out = [];
   let m;
   BRACKET_RE.lastIndex = 0;
   while ((m = BRACKET_RE.exec(body)) !== null) {
-    if (isBracketPlaceholder(m[1])) {
+    if (isBracketPlaceholder(m[1]) || schemaAliases.has(m[1])) {
       out.push({ match: m[0], inner: m[1], index: m.index });
     }
   }
@@ -401,13 +404,14 @@ export function isMustachePlaceholder(inner) {
   return isBracketPlaceholder(inner);
 }
 
-export function detectMustache(body) {
+export function detectMustache(body, schemaAliases = new Set()) {
   const out = [];
   let m;
   MUSTACHE_RE.lastIndex = 0;
   while ((m = MUSTACHE_RE.exec(body)) !== null) {
-    if (isMustachePlaceholder(m[1])) {
-      out.push({ match: m[0], inner: m[1].trim(), index: m.index });
+    const inner = m[1].trim();
+    if (isMustachePlaceholder(inner) || schemaAliases.has(inner)) {
+      out.push({ match: m[0], inner, index: m.index });
     }
   }
   return out;
@@ -555,7 +559,9 @@ export function loadSchema(templatePath) {
     e.exitCode = EXIT.IO;
     throw e;
   }
-  return parseSchema(parsed, file);
+  const out = parseSchema(parsed, file);
+  out.sourcePath = file;
+  return out;
 }
 
 export function parseSchema(parsed, sourceLabel = "<schema>") {
@@ -623,16 +629,28 @@ export async function runCascade(input, opts, schema, envObj, { fetcher } = {}) 
     warnings.push(`mixed placeholder conventions: ${b} bracket, ${m} mustache (using --syntax ${opts.syntax})`);
   }
 
+  // Pre-compute the schema's union of declared phrase forms so detection can
+  // rescue placeholders the heuristic rule would otherwise reject (e.g. all-
+  // caps signature-block markers like [COMPANY], or fill-in markers like
+  // [_____________]). Without this, a schema-declared alias is silently
+  // dropped during detection and never reaches the alias-resolution step.
+  const schemaAliasSet = new Set();
+  if (schema) {
+    for (const entry of Object.values(schema.entries)) {
+      for (const a of entry.aliases) schemaAliasSet.add(a);
+    }
+  }
+
   // Tier 1 / 2 (sequenced by --syntax; only the selected family runs).
   if (opts.syntax === "bracket") {
-    const hits = detectBracket(body);
+    const hits = detectBracket(body, schemaAliasSet);
     if (hits.length > 0) {
-      return assemble("bracket", hits, schema, body, warnings);
+      return assemble("bracket", hits, schema, warnings);
     }
   } else {
-    const hits = detectMustache(body);
+    const hits = detectMustache(body, schemaAliasSet);
     if (hits.length > 0) {
-      return assemble("mustache", hits, schema, body, warnings);
+      return assemble("mustache", hits, schema, warnings);
     }
   }
 
@@ -640,7 +658,7 @@ export async function runCascade(input, opts, schema, envObj, { fetcher } = {}) 
   if (input.kind === "docx") {
     const hits = detectDocxHighlight(input.docxXml);
     if (hits.length > 0) {
-      return assemble("docx-highlight", hits, schema, body, warnings);
+      return assemble("docx-highlight", hits, schema, warnings);
     }
   }
 
@@ -649,7 +667,7 @@ export async function runCascade(input, opts, schema, envObj, { fetcher } = {}) 
     const dict = opts.dictionary ? readDictionary(opts.dictionary) : DEFAULT_HEURISTIC_DICT;
     const hits = detectHeuristic(body, dict);
     if (hits.length > 0) {
-      const r = assemble("heuristic", hits, schema, body, warnings);
+      const r = assemble("heuristic", hits, schema, warnings);
       r.heuristicGate = true; // signal: requires confirmation
       return r;
     }
@@ -659,7 +677,7 @@ export async function runCascade(input, opts, schema, envObj, { fetcher } = {}) 
   if (provider && !opts.noLlm) {
     const hits = await detectLlm(body, provider, { fetcher });
     if (hits.length > 0) {
-      return assemble("llm", hits, schema, body, warnings, /*fromLlm=*/true);
+      return assemble("llm", hits, schema, warnings, /*fromLlm=*/true);
     }
   }
 
@@ -678,7 +696,7 @@ export function readDictionary(path) {
   }
 }
 
-function assemble(tier, hits, schema, body, warnings, fromLlm = false) {
+function assemble(tier, hits, schema, warnings, fromLlm = false) {
   // Group hits by canonical key (schema-aware).
   const byKey = new Map();
   const unmapped = [];
@@ -954,8 +972,19 @@ export async function cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher
   }
 
   const { resolved, missing, sources } = await resolveValues(result.placeholders, opts, paramsObj);
+  // Footgun guard: flag --typo'd-key VALUE that didn't match any detected
+  // placeholder. Without this warning, a typo'd flag is silently dropped and
+  // the user sees only a "missing required" error without the connection.
+  const declaredKeys = new Set(result.placeholders.map((p) => p.key));
+  const unusedFlags = Object.keys(opts.paramFlags).filter((k) => !declaredKeys.has(k));
+  for (const u of unusedFlags) {
+    result.warnings.push(`flag --${u.replace(/_/g, "-")} did not match any detected placeholder (possible typo?)`);
+  }
   if (missing.length > 0) {
     printMissing(missing, err);
+    if (unusedFlags.length > 0) {
+      err.write(paint(`note: you also passed ${unusedFlags.map(u => `--${u.replace(/_/g, "-")}`).join(", ")} which did not match any placeholder.\n`, "yellow", err));
+    }
     return EXIT.VALIDATION;
   }
 
@@ -988,7 +1017,7 @@ export async function cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher
   if (opts.why && !opts.json) {
     err.write(buildWhyBlock({
       inputDescriptor: describeInput(input),
-      schemaDescriptor: schema ? `${schema.form} form` : "(none, inferred)",
+      schemaDescriptor: schema ? `${schema.sourcePath || "(parsed)"} (${schema.form} form)` : "(none, inferred)",
       tier: result.tier,
       placeholders: result.placeholders,
       sources,

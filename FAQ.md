@@ -128,6 +128,49 @@ array of strings. Your file **replaces** the bundled list (not extends
 it). Copy `DEFAULT_HEURISTIC_DICT` out of `draft-cli.mjs` and edit if
 you want a superset.
 
+## What if a template has two `[_____________]` placeholders that should hold different values?
+
+The YC SAFE has this exact problem: one `$[_____________]` is the
+purchase amount, another `$[_____________]` is the post-money valuation
+cap. Same bracketed text, different roles.
+
+v1's alias-based matching treats them as one parameter. Substituting
+`100000` for `purchase_amount` will replace **both** occurrences.
+
+Workarounds for v1:
+
+1. Edit the template before running draft-cli to make the placeholders
+   distinguishable: `[Purchase Amount]` and `[Valuation Cap]`. Then
+   the schema can map them independently.
+2. Substitute the first, then run draft-cli again with a different
+   value to substitute the second. Awkward but works for two-occurrence
+   cases.
+3. Run draft-cli, then manually fix the second occurrence in the output.
+
+Positional-aware placeholder addressing (`[___1]`, `[___2]`) is a v2
+candidate.
+
+## My template has `[COMPANY]` in the signature block. draft-cli ignores it. Why?
+
+`draft-cli`'s default detection rule rejects all-caps bracketed runs to
+avoid false positives on section headings like `[CONFIDENTIALITY]`. But
+all-caps signature-block placeholders are real, especially in older
+templates and ones converted from `.docx`.
+
+The fix: declare it in the schema file with the all-caps phrase as an
+alias.
+
+```json
+{ "company": ["Company Name", "COMPANY"] }
+```
+
+`draft-cli` consults the schema's alias union during detection and
+**rescues** otherwise-rejected runs that are explicitly declared. This
+is documented in [PARAM_SCHEMA.md §5](PARAM_SCHEMA.md). Without the
+schema, the run is silently skipped — which is intentional, but visible
+when you run `--list-placeholders` and don't see the placeholder you
+expected.
+
 ## How do I integrate with `template-vault-cli`?
 
 `template-vault-cli` ships templates by category and name. `draft-cli`

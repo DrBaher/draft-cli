@@ -89,3 +89,16 @@ test("detectBracket on real Common Paper coverpage finds all 5 placeholders", as
   assert.ok(innerSet.has("Fill in state"));
   assert.ok(innerSet.has("Fill in city or county and state, i.e. “courts located in New Castle, DE”"));
 });
+
+test("detectBracket: schema aliases rescue heuristic-rejected runs (YC SAFE [COMPANY] and [_____________])", () => {
+  const body = "Signed by [COMPANY] for the amount of $[_____________] on [Effective Date].";
+  // Without schema rescue: [COMPANY] (all-caps) and [_____________] (all underscores) are dropped.
+  const withoutSchema = detectBracket(body);
+  assert.equal(withoutSchema.length, 1);
+  assert.equal(withoutSchema[0].inner, "Effective Date");
+  // With schema aliases: both rescued and now reach the alias-resolution step.
+  const aliases = new Set(["COMPANY", "_____________"]);
+  const withSchema = detectBracket(body, aliases);
+  assert.equal(withSchema.length, 3);
+  assert.deepEqual(withSchema.map(h => h.inner), ["COMPANY", "_____________", "Effective Date"]);
+});

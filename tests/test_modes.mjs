@@ -122,6 +122,40 @@ test("mixed-convention template emits a doctor-style warning", async () => {
   assert.match(err, /mixed placeholder conventions/);
 });
 
+test("typo'd param flag surfaces as a warning (footgun guard)", async () => {
+  const dir = tmp();
+  const tpl = makeFile(dir, "x.md", "[Party A]");
+  const { code, err } = await runMain(main, [
+    tpl, "--party-a", "Acme", "--random-typo", "x", "--why",
+  ]);
+  assert.equal(code, 0);
+  assert.match(err, /flag --random-typo did not match any detected placeholder/);
+});
+
+test("typo'd param flag named in the missing-required error", async () => {
+  const dir = tmp();
+  const tpl = makeFile(dir, "x.md", "[Party A] [Party B]");
+  // User typos --party-b as --party-bb. Should see both the missing error
+  // AND a note pointing at the typo.
+  const { code, err } = await runMain(main, [
+    tpl, "--party-a", "Acme", "--party-bb", "Vendor",
+  ]);
+  assert.equal(code, 2);
+  assert.match(err, /missing required parameter/);
+  assert.match(err, /party_b/);
+  assert.match(err, /you also passed --party-bb which did not match/);
+});
+
+test("--why schema descriptor includes the schema file path", async () => {
+  const { code, err } = await runMain(main, [
+    "tests/fixtures/bracket-template.md", "--why",
+    "--party-a", "A", "--party-b", "B",
+    "--effective-date", "D", "--state-of-california", "S",
+  ]);
+  assert.equal(code, 0);
+  assert.match(err, /schema +=.*bracket-template\.params\.json.*short form/);
+});
+
 test("--syntax mustache opts into mustache detection", async () => {
   const dir = tmp();
   const tpl = makeFile(dir, "m.md", "{{Party A}} and {{Party B}}");
