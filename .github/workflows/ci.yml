@@ -58,5 +58,11 @@ jobs:
         run: |
           tarball=$(ls -1t ./*.tgz | head -n1)
           npm install -g "$tarball"
-      - run: draft --version
-      - run: draft --demo
+      - name: assert the bin actually runs (regression guard for 0.1.0)
+        run: |
+          out=$(draft --version)
+          echo "version output: $out"
+          [[ "$out" == draft-cli* ]] || { echo "::error::draft --version produced unexpected output: '$out'"; exit 1; }
+          demo=$(draft --demo)
+          echo "demo first line: $(echo "$demo" | head -n1)"
+          echo "$demo" | grep -q "^demo:" || { echo "::error::draft --demo did not produce demo output"; exit 1; }

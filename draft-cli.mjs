@@ -3,7 +3,7 @@
 // Part of the contract-operations suite. MIT. See LICENSE.
 // Single-file Node.js CLI. Stdlib-only except `jszip` for .docx unzip.
 
-import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, extname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -70,7 +70,7 @@ import { fileURLToPath } from "node:url";
  */
 
 /** @type {string} */
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
 // ─── EXIT CODES ─────────────────────────────────────────────────────────────
 /**
@@ -1746,7 +1746,7 @@ export async function main(argv, io = {}) {
 
 // Entry point: only run when invoked directly (not when imported by tests).
 const isMain = (() => {
-  try { return process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]); }
+  try { return process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(resolve(process.argv[1])); }
   catch { return false; }
 })();
 if (isMain) {

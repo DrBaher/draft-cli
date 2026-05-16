@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.1.1 — 2026-05-16
+
+### Fixed
+
+- **Globally-installed `draft` binary now runs `main()`.** The
+  entrypoint check at the bottom of `draft-cli.mjs` compared
+  `fileURLToPath(import.meta.url)` against `resolve(process.argv[1])`.
+  `resolve` only resolves relative → absolute; it does not resolve
+  symlinks. When `npm install -g` creates a bin symlink (e.g.
+  `/opt/homebrew/bin/draft → ../lib/node_modules/@drbaher/draft-cli/draft-cli.mjs`),
+  `process.argv[1]` is the symlink path, so the comparison failed,
+  `main()` was never called, and `draft --version` / `draft --demo`
+  silently exited 0 with no output. The fix wraps `resolve(...)` in
+  `realpathSync(...)` to canonicalize through symlinks.
+
+### Hardened
+
+- **CI smoke step asserts on stdout.** Previously the workflow ran
+  `draft --version` and `draft --demo` but did not check exit code or
+  expected output. Since the v0.1.0 bug made the bin a silent no-op
+  with exit 0, smoke passed. The step now greps stdout for the
+  `draft-cli ` prefix and the `demo:` line, so a regression of this
+  shape would fail CI.
+
 ## 0.1.0 — 2026-05-16
 
 Initial release. Single-file Node.js CLI for deterministic placeholder
