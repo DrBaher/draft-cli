@@ -24,9 +24,11 @@ and the project adheres to semantic versioning once it leaves 0.x.
 - **CI smoke step asserts on stdout.** Previously the workflow ran
   `draft --version` and `draft --demo` but did not check exit code or
   expected output. Since the v0.1.0 bug made the bin a silent no-op
-  with exit 0, smoke passed. The step now greps stdout for the
-  `draft-cli ` prefix and the `demo:` line, so a regression of this
-  shape would fail CI.
+  with exit 0, smoke passed. The step now greps `draft --version`
+  stdout for the `draft-cli ` prefix and `draft --demo` stdout for
+  the substituted Party A value (`Acme Corporation`) — proving both
+  that the bin runs and that substitution happens end-to-end. A
+  regression of either shape would now fail CI.
 
 ## 0.1.0 — 2026-05-16
 

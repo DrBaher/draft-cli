@@ -65,4 +65,6 @@ jobs:
           [[ "$out" == draft-cli* ]] || { echo "::error::draft --version produced unexpected output: '$out'"; exit 1; }
           demo=$(draft --demo)
           echo "demo first line: $(echo "$demo" | head -n1)"
-          echo "$demo" | grep -q "^demo:" || { echo "::error::draft --demo did not produce demo output"; exit 1; }
+          # --demo writes the substituted template to stdout (and the "demo: substituting..." line to stderr).
+          # Grep for the substituted Party A value to prove the substitution actually ran end-to-end.
+          echo "$demo" | grep -q "Acme Corporation" || { echo "::error::draft --demo stdout did not contain substituted [Party A]"; exit 1; }
