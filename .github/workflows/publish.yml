@@ -35,10 +35,3 @@ jobs:
             exit 1
           fi
       - run: npm publish --provenance --access public
-        env:
-          # Bootstrap: npm's Trusted Publisher requires a pre-existing
-          # package, so the first publish of a new scoped package cannot
-          # use OIDC. Safe to remove once Trusted Publisher is configured
-          # on npm for this package (npm CLI prefers OIDC over token when
-          # both are present).
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
