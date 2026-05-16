@@ -70,7 +70,7 @@ import { fileURLToPath } from "node:url";
  */
 
 /** @type {string} */
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 // ─── EXIT CODES ─────────────────────────────────────────────────────────────
 /**
@@ -918,6 +918,12 @@ export function parseSchema(parsed, sourceLabel = "<schema>") {
         aliases: v.aliases.slice(),
         required: v.required !== false,
         default: Object.prototype.hasOwnProperty.call(v, "default") ? v.default : null,
+        // v2 #3: typed parameters. `type` is one of `date|money|party` (or
+        // absent → no validation/normalization). `format` (date) and
+        // `currency` (money) are optional.
+        type: typeof v.type === "string" ? v.type : null,
+        format: typeof v.format === "string" ? v.format : null,
+        currency: typeof v.currency === "string" ? v.currency : null,
       };
     } else {
       if (!Array.isArray(v)) {
@@ -925,7 +931,7 @@ export function parseSchema(parsed, sourceLabel = "<schema>") {
         e.exitCode = EXIT.IO;
         throw e;
       }
-      entries[k] = { aliases: v.slice(), required: true, default: null };
+      entries[k] = { aliases: v.slice(), required: true, default: null, type: null, format: null, currency: null };
     }
   }
   return { form: long ? "long" : "short", entries };
@@ -1066,6 +1072,9 @@ function assemble(tier, hits, schema, warnings, fromLlm = false) {
         required: resolved.required,
         default: resolved.default,
         aliases: resolved.aliases,
+        type: resolved.type,
+        format: resolved.format,
+        currency: resolved.currency,
         hits: [],
       });
     }
@@ -1080,14 +1089,22 @@ function resolveKey(hit, schema, fromLlm) {
   if (schema) {
     for (const [key, entry] of Object.entries(schema.entries)) {
       if (entry.aliases.includes(hit.inner)) {
-        return { key, required: entry.required, default: entry.default, aliases: entry.aliases };
+        return {
+          key,
+          required: entry.required,
+          default: entry.default,
+          aliases: entry.aliases,
+          type: entry.type || null,
+          format: entry.format || null,
+          currency: entry.currency || null,
+        };
       }
     }
     return null;
   }
   const key = fromLlm && hit.suggested_key ? hit.suggested_key : canonicalKey(hit.inner);
   if (!validKey(key)) return null;
-  return { key, required: true, default: null, aliases: [hit.inner] };
+  return { key, required: true, default: null, aliases: [hit.inner], type: null, format: null, currency: null };
 }
 
 // ─── VALUE RESOLUTION (CLI > JSON > prompt > default) ───────────────────────
@@ -1163,6 +1180,218 @@ export async function resolveValues(placeholders, opts, paramsObj, { prompter = 
     if (p.required) missing.push(p);
   }
   return { resolved, missing, sources };
+}
+
+// ─── TYPED-PARAMETER NORMALIZATION (v2 #3) ──────────────────────────────────
+// Schema entries can declare `type: date | money | party` with optional
+// `format` (date) or `currency` (money). Inputs are validated and normalized
+// after value resolution and before substitution. Hard error (exit 4) on
+// invalid input — typed params are opt-in; the user asked for validation.
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+                     "July", "August", "September", "October", "November", "December"];
+const MONTH_INDEX = (() => {
+  const m = {};
+  MONTH_NAMES.forEach((name, i) => {
+    m[name.toLowerCase()] = i;
+    m[name.slice(0, 3).toLowerCase()] = i;
+  });
+  // "Sept" is a common 4-letter abbrev.
+  m.sept = 8;
+  return m;
+})();
+
+/**
+ * Parse a date input. Accepts ISO `YYYY-MM-DD` or spelled
+ * `Month D, YYYY` / `Mon D YYYY`. Returns a UTC `Date` on success or `null`
+ * on failure. Q3.1: US (`MM/DD/YYYY`) and European (`DD/MM/YYYY`) numeric
+ * formats are NOT accepted — they're ambiguous and footgun-y. Use ISO for
+ * machine input, spelled for human input.
+ *
+ * @param {string} raw
+ * @returns {Date | null}
+ */
+export function parseDateValue(raw) {
+  const s = String(raw).trim();
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (iso) {
+    const [, y, m, d] = iso;
+    const date = new Date(Date.UTC(+y, +m - 1, +d));
+    // Reject impossible dates (e.g. 2026-02-31 round-trips to 2026-03-03).
+    if (date.getUTCFullYear() !== +y || date.getUTCMonth() !== +m - 1 || date.getUTCDate() !== +d) return null;
+    return date;
+  }
+  const spelled = /^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/.exec(s);
+  if (spelled) {
+    const month = MONTH_INDEX[spelled[1].toLowerCase()];
+    if (month === undefined) return null;
+    const date = new Date(Date.UTC(+spelled[3], month, +spelled[2]));
+    if (date.getUTCMonth() !== month || date.getUTCDate() !== +spelled[2]) return null;
+    return date;
+  }
+  return null;
+}
+
+/**
+ * Format a `Date` per a simple format string. Supported tokens:
+ * `yyyy` (year), `MMMM` (full month name), `MM` (2-digit month), `d` (day).
+ * Order doesn't matter; tokens are matched in a single pass so MMMM doesn't
+ * accidentally consume MM, and `d` doesn't leak into month names.
+ *
+ * @param {Date} date
+ * @param {string} format
+ * @returns {string}
+ */
+export function formatDateValue(date, format) {
+  const y = date.getUTCFullYear();
+  const m = date.getUTCMonth();
+  const d = date.getUTCDate();
+  return format.replace(/yyyy|MMMM|MM|d/g, (token) => {
+    if (token === "yyyy") return String(y);
+    if (token === "MMMM") return MONTH_NAMES[m];
+    if (token === "MM") return String(m + 1).padStart(2, "0");
+    if (token === "d") return String(d);
+    return token;
+  });
+}
+
+/**
+ * Parse a money input. Accepts `$5,000`, `5000.50`, `$5M`, `2.5K`, etc.
+ * Handles `K`/`M`/`B` suffixes (case-insensitive). Returns the value in
+ * minor units (cents for USD) as an integer, or `null` on failure.
+ *
+ * @param {string} raw
+ * @returns {number | null}
+ */
+export function parseMoneyValue(raw) {
+  const s = String(raw).trim();
+  if (!s) return null;
+  // Strict shape: optional minus, optional single $, digits (with optional
+  // thousand-comma groups), optional decimal, optional K/M/B. Rejects
+  // doubled `$`, ad-hoc comma placement, multiple decimals, words.
+  if (!/^-?\$?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?[KMB]?$/i.test(s)) return null;
+  let core = s.replace(/[$,\s]/g, "");
+  let mult = 1;
+  if (/[KMB]$/i.test(core)) {
+    mult = { K: 1e3, M: 1e6, B: 1e9 }[core.slice(-1).toUpperCase()];
+    core = core.slice(0, -1);
+  }
+  const n = parseFloat(core);
+  if (!isFinite(n)) return null;
+  return Math.round(n * mult * 100);
+}
+
+/**
+ * Format a money value (in minor units, e.g. cents for USD) per a currency.
+ * Q3.2: v2 supports USD only. Adds thousand separators and always renders
+ * two decimal places.
+ *
+ * @param {number} minor — value in minor units (cents).
+ * @param {string} currency — currency code (only "USD" supported in v2).
+ * @returns {string}
+ * @throws {Error} on unsupported currency.
+ */
+export function formatMoneyValue(minor, currency) {
+  if (currency !== "USD") {
+    throw new Error(`only USD is supported in v0.3.0; got currency="${currency}"`);
+  }
+  const sign = minor < 0 ? "-" : "";
+  const abs = Math.abs(minor);
+  const dollars = Math.floor(abs / 100);
+  const cents = abs % 100;
+  const intPart = String(dollars).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${sign}$${intPart}.${String(cents).padStart(2, "0")}`;
+}
+
+/**
+ * Normalize a raw value per a placeholder's schema-declared type. Returns
+ * the normalized string. Throws on invalid input (Q3.3 → hard error).
+ * If no `type` is declared on the placeholder, returns the raw value
+ * unchanged.
+ *
+ * @param {string} rawValue
+ * @param {{ type?: string|null, format?: string|null, currency?: string|null, key?: string }} placeholder
+ * @returns {string}
+ * @throws {Error} with `.exitCode = EXIT.VALIDATION` on bad input.
+ */
+export function normalizeTypedValue(rawValue, placeholder) {
+  const type = placeholder && placeholder.type;
+  if (!type) return rawValue;
+  if (type === "date") {
+    const date = parseDateValue(rawValue);
+    if (!date) {
+      const e = new Error(
+        `could not parse "${rawValue}" as a date. expected ISO ` +
+        `(2027-01-15) or spelled ("January 15, 2027"). ` +
+        `US ("01/15/2027") and European ("15/01/2027") forms are not ` +
+        `accepted — they're ambiguous.`
+      );
+      e.exitCode = EXIT.VALIDATION;
+      throw e;
+    }
+    return formatDateValue(date, placeholder.format || "MMMM d, yyyy");
+  }
+  if (type === "money") {
+    const minor = parseMoneyValue(rawValue);
+    if (minor === null) {
+      const e = new Error(
+        `could not parse "${rawValue}" as money. expected like ` +
+        `"$5,000", "5000.50", "$5M", "2.5K".`
+      );
+      e.exitCode = EXIT.VALIDATION;
+      throw e;
+    }
+    return formatMoneyValue(minor, placeholder.currency || "USD");
+  }
+  if (type === "party") {
+    const s = String(rawValue).trim();
+    if (!s) {
+      const e = new Error(`party value must be non-empty`);
+      e.exitCode = EXIT.VALIDATION;
+      throw e;
+    }
+    if (/\]\(/.test(s)) {
+      const e = new Error(`party value "${rawValue}" contains a markdown link; pass the bare party name instead.`);
+      e.exitCode = EXIT.VALIDATION;
+      throw e;
+    }
+    if (/[.!?,;:]$/.test(s)) {
+      const e = new Error(`party value "${rawValue}" has trailing punctuation; remove it before passing.`);
+      e.exitCode = EXIT.VALIDATION;
+      throw e;
+    }
+    return s;
+  }
+  const e = new Error(`unknown type "${type}" on placeholder${placeholder.key ? ` "${placeholder.key}"` : ""}. expected one of: date, money, party.`);
+  e.exitCode = EXIT.IO;
+  throw e;
+}
+
+/**
+ * Run {@link normalizeTypedValue} across every resolved placeholder value.
+ * Mutates `resolved` in place with normalized strings. Collects all errors
+ * before returning so the user sees every type failure at once.
+ *
+ * @param {Placeholder[]} placeholders
+ * @param {Object<string,string>} resolved
+ * @returns {{ ok: boolean, errors: Array<{ key: string, message: string }>, normalized: Object<string,{from: string, to: string, type: string}> }}
+ */
+export function normalizeTypedValues(placeholders, resolved) {
+  const errors = [];
+  const normalized = {};
+  for (const p of placeholders) {
+    if (!p.type) continue;
+    if (resolved[p.key] === undefined) continue;
+    const raw = resolved[p.key];
+    try {
+      const norm = normalizeTypedValue(raw, p);
+      if (norm !== raw) normalized[p.key] = { from: raw, to: norm, type: p.type };
+      resolved[p.key] = norm;
+    } catch (e) {
+      errors.push({ key: p.key, message: e.message });
+    }
+  }
+  return { ok: errors.length === 0, errors, normalized };
 }
 
 async function nodePrompter(placeholder) {
@@ -1403,6 +1632,21 @@ export async function cmdValidate(opts, input, schema, paramsObj, envObj, { fetc
     }
     return EXIT.VALIDATION;
   }
+  // v2 #3: typed-parameter validation. Mirror what cmdDraft does so
+  // `--validate` catches type errors before the user runs draft.
+  const typeCheck = normalizeTypedValues(result.placeholders, resolved);
+  if (!typeCheck.ok) {
+    for (const te of typeCheck.errors) {
+      err.write(paint(`error: type validation failed for "${te.key}": ${te.message}\n`, "red", err));
+    }
+    if (opts.json) {
+      out.write(JSON.stringify({
+        ok: false,
+        type_errors: typeCheck.errors.map(({ key, message }) => ({ key, message })),
+      }, null, 2) + "\n");
+    }
+    return EXIT.VALIDATION;
+  }
   if (opts.json) {
     out.write(JSON.stringify({ ok: true, resolved: Object.keys(resolved), sources }, null, 2) + "\n");
   } else {
@@ -1468,6 +1712,17 @@ export async function cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher
     printMissing(missing, err);
     if (unusedFlags.length > 0) {
       err.write(paint(`note: you also passed ${unusedFlags.map(u => `--${u.replace(/_/g, "-")}`).join(", ")} which did not match any placeholder.\n`, "yellow", err));
+    }
+    return EXIT.VALIDATION;
+  }
+
+  // v2 #3: typed-parameter normalization. Schema entries can declare
+  // `type: date | money | party`. Inputs are validated and normalized
+  // before substitution. Hard error on bad input (Q3.3 decision).
+  const typeCheck = normalizeTypedValues(result.placeholders, resolved);
+  if (!typeCheck.ok) {
+    for (const te of typeCheck.errors) {
+      err.write(paint(`error: type validation failed for "${te.key}": ${te.message}\n`, "red", err));
     }
     return EXIT.VALIDATION;
   }

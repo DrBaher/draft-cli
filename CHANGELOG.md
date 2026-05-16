@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.3.0 — 2026-05-16
+
+### Added
+
+- **Typed parameters (`type: date | money | party`).** Long-form
+  schema entries can declare a `type`, with optional `format` (date)
+  or `currency` (money). Inputs are validated and normalized between
+  value resolution and substitution; bad inputs hard-error with a
+  per-key message (exit 4). See `PARAM_SCHEMA.md` §5 for the accepted
+  shapes per type, the rejected ambiguous forms (Q3.1: US
+  `MM/DD/YYYY` and European `DD/MM/YYYY` are rejected as ambiguous),
+  and the v2 currency scope (Q3.2: USD only).
+- **`--validate` now catches type errors** before draft runs. With
+  `--json`, errors are emitted as a `type_errors` array on the
+  result payload.
+- **New public API:** `parseDateValue(raw)`, `formatDateValue(date, fmt)`,
+  `parseMoneyValue(raw)` → minor units, `formatMoneyValue(minor, currency)`,
+  `normalizeTypedValue(raw, placeholder)`, `normalizeTypedValues(placeholders, resolved)`.
+
+### Schema-contract change
+
+`PARAM_SCHEMA.md` §5 gains a "Typed parameters" section. Long-form
+entries can now include `type`, `format`, and `currency` fields; short
+form is unchanged. v0.3.0 schemas are forward-compatible with v0.2.x
+readers (which will silently ignore the new fields, since they're
+opt-in metadata on the long-form entry).
+
 ## 0.2.0 — 2026-05-16
 
 ### Added

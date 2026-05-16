@@ -237,6 +237,39 @@ its own alias list (Q3 locked) — list it explicitly if needed.
 Parser selects long form iff a top-level `_meta` key is present. Short
 and long are not mixable within one file.
 
+### Typed parameters (v0.3.0, opt-in)
+
+Long-form entries can declare `type`, with optional `format` (`date`)
+or `currency` (`money`). Inputs are validated and normalized between
+value resolution and substitution. Bad input → exit 4
+(`EXIT.VALIDATION`) with a per-key error message; all type errors are
+collected before exit so the user sees every issue at once.
+
+```json
+{
+  "_meta": { "schema_version": 1 },
+  "effective_date":  { "aliases": ["Effective Date"],  "type": "date",  "format": "MMMM d, yyyy" },
+  "purchase_amount": { "aliases": ["Purchase Amount"], "type": "money", "currency": "USD" },
+  "party_a":         { "aliases": ["Party A"],         "type": "party" }
+}
+```
+
+| `type`   | Accepts                                                              | Normalizes to                          | Notes |
+| -------- | -------------------------------------------------------------------- | -------------------------------------- | ----- |
+| `date`   | ISO (`2027-01-15`) or spelled (`January 15, 2027`, `Jan 15 2027`)    | `format` field (default `MMMM d, yyyy`) | Q3.1 locked: US (`MM/DD/YYYY`) and European (`DD/MM/YYYY`) numeric forms are **rejected** as ambiguous. |
+| `money`  | `$5,000`, `5000.50`, `$5M`, `2.5K`, `1B`; rejects `$$5`, `5,00`, etc. | `currency`-formatted (e.g. `$5,000,000.00`) | Q3.2 locked: v0.3.0 supports `currency: "USD"` only. |
+| `party`  | Non-empty after trim; no markdown links `[text](url)`; no trailing punctuation `.,;:!?` | Trimmed string | Q3.3 locked: hard error on bad input — typed params are opt-in. |
+
+`format` for `date` supports `yyyy`, `MMMM`, `MM`, `d` tokens (matched
+in a single pass — `MM` doesn't accidentally consume `MMMM`, `d`
+doesn't leak into month names). Other literal characters pass through
+unchanged. Other tokens (e.g. `HH:mm`, `dd`, `EEEE`) are deferred to
+future versions.
+
+Programmatic API for drivers: `parseDateValue`, `formatDateValue`,
+`parseMoneyValue`, `formatMoneyValue`, `normalizeTypedValue`,
+`normalizeTypedValues`.
+
 ### Orphan handling (Q4 locked)
 
 Schema declares a key whose alias list matches no detected phrase →
