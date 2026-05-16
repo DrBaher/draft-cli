@@ -52,6 +52,15 @@ suite ([cli.drbaher.com](https://cli.drbaher.com)).
   no other data. No network call by default.
 - Configuration contract is captured in
   [PARAM_SCHEMA.md](PARAM_SCHEMA.md), reviewed and locked before code.
+- **T1 bracket rule is permissive**, not strict Title-Case. Real
+  Common Paper / YC SAFE / Bonterms templates use sentence-shaped
+  placeholders with full punctuation (`[Today’s date]`, `[1 year(s)]`,
+  `[Fill in city or county and state, i.e. "courts located in New Castle, DE"]`).
+  The rule rejects markdown links (`[label](url)`), checkbox markers
+  (`[x]`, `[ ]`), pure section refs (`[3.1]`), all-caps headings, and
+  punctuation-only brackets — but otherwise admits anything bracketed
+  that contains at least one letter. False positives are filtered with
+  the schema file; false negatives in this domain are higher-cost.
 
 ## Deferred (v2 candidates)
 

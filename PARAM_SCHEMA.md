@@ -37,17 +37,41 @@ The cascade runs each tier in order. The first tier that returns **≥ 1 placeho
 | T4   | Heuristic      | ✅            | on      | `--no-heuristic`                 |
 | T5   | LLM            | ❌            | env-gated | no LLM provider configured     |
 
-### T1 — Bracket `[Title Case]`
+### T1 — Bracket `[...]`
 
 A bracketed run is treated as a placeholder when **all** of:
 
-1. `[...]`, no nested brackets.
-2. Inner text matches `^[A-Z][A-Za-z0-9 ]{0,78}[A-Za-z0-9]$` (length 2–80).
-3. Inner text is **not** entirely uppercase (excludes `[CONFIDENTIALITY]`).
-4. First character is a letter (excludes `[3.1]`).
+1. `[...]`, no nested brackets, length 1–200.
+2. **Not** immediately followed by `(` — i.e. not a markdown link
+   (`[label](url)` is skipped).
+3. **Not** a checkbox marker — inner matches `[ xX]{1,3}` is skipped
+   (`[x]`, `[ ]`, `[X]`, etc.).
+4. **Not** a pure section reference — inner matches `\d+(\.\d+)*$` is
+   skipped (`[3.1]`, `[4.2.1]`).
+5. Inner contains **at least one letter** (excludes `[___]`, `[---]`).
+6. Inner is **not entirely uppercase letters** (excludes
+   `[CONFIDENTIALITY]`, `[ARTICLE I]`).
 
-Examples that match: `[Party A]`, `[Effective Date]`, `[State of California]`.
-Examples that don't: `[3.1]`, `[ARTICLE I]`, `[CONFIDENTIALITY]`.
+Examples that match: `[Party A]`, `[Effective Date]`,
+`[State of California]`, `[Today’s date]`, `[1 year(s)]`,
+`[Fill in state]`,
+`[Evaluating whether to enter into a business relationship with the other party.]`.
+
+Examples that don't: `[3.1]`, `[ARTICLE I]`, `[CONFIDENTIALITY]`,
+`[x]`, `[ ]`, `[the docs](https://example.com)`.
+
+The rule is intentionally permissive because real legal templates
+(Common Paper, YC SAFE, Bonterms) use sentence-shaped placeholders
+with full punctuation. False positives are filtered via the
+`<template>.params.json` schema (§5); false negatives in this domain
+are higher-cost than false positives.
+
+**Canonical key derivation** (when no schema is present): inner →
+lowercase → non-alphanumeric runs collapsed to `_` → leading/trailing
+`_` stripped → prefix `_` if leading char is a digit → truncated at 60
+chars. So `[Party A]` → `party_a`, `[1 year(s)]` → `_1_year_s`,
+`[Today’s date]` → `today_s_date`. Templates with long sentence-shaped
+placeholders should ship a schema file to give them clean keys.
 
 Cross-references like `[See Section 4]` *do* match T1 by design. The
 **schema file** (§5) is the disambiguation tool: when present, only declared
@@ -132,9 +156,12 @@ Prompt asks for a JSON array of placeholder spans with `start`, `end`,
 `suggested_key`. Result is validated against the same canonical-key
 rules; invalid entries are dropped with a warning.
 
-`--no-llm` forces the cascade to stop at T4 even when env is configured.
-`--llm` forces T5 to run even when T1–T4 found matches (useful for
-discovering missed generics in a bracketed template).
+`--no-llm` disables T5 even when env is configured (the cascade ends at
+T4). `--llm` asserts that an LLM provider should be available and
+fail-fasts with a clear error if none is configured; it does **not**
+override the sequential-with-stop semantics. Running T5 on top of an
+earlier-tier hit (the "find missed generics in a bracketed template"
+workflow) is a v2 candidate, not v1 behavior.
 
 ## 4. Key conventions
 

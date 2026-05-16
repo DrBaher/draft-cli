@@ -186,8 +186,15 @@ export class UsageError extends Error {
 export function kebabToSnake(s) { return s.replace(/-/g, "_"); }
 
 export function canonicalKey(matchText) {
-  // Title Case "Party A Name" / snake "party_a" / mixed "Party A Name" -> party_a_name
-  return matchText.trim().toLowerCase().replace(/\s+/g, "_");
+  // Permissive slug: lowercase, non-alphanum runs become single "_",
+  // strip leading/trailing "_", prefix "_" if leading char is a digit.
+  let k = matchText.trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (/^[0-9]/.test(k)) k = "_" + k;
+  // Cap at 60 chars to keep CLI flags usable.
+  if (k.length > 60) k = k.slice(0, 60).replace(/_+$/, "");
+  return k;
 }
 
 const VALID_KEY_RE = /^[a-z_][a-z0-9_]*$/;
@@ -356,11 +363,19 @@ export function extractDocxHighlights(xml) {
 }
 
 // ─── TIER 1: BRACKET ────────────────────────────────────────────────────────
-const BRACKET_RE = /\[([^\[\]\n]{2,80})\]/g;
+// Match [...] runs that are NOT immediately followed by '(' (markdown link).
+const BRACKET_RE = /\[([^\[\]\n]{1,200})\](?!\()/g;
+const SECTION_REF_RE = /^\d+(?:\.\d+)*$/;
+const CHECKBOX_RE = /^[ xX]{1,3}$/;
 
 export function isBracketPlaceholder(inner) {
-  if (!/^[A-Z][A-Za-z0-9 ]{0,78}[A-Za-z0-9]$/.test(inner)) return false;
-  if (inner === inner.toUpperCase()) return false; // all-caps headings
+  if (!inner) return false;
+  if (CHECKBOX_RE.test(inner)) return false;
+  if (SECTION_REF_RE.test(inner)) return false;
+  // Must contain at least one letter so we don't catch [___] or [---].
+  if (!/[A-Za-z]/.test(inner)) return false;
+  // Reject all-caps headings ([CONFIDENTIALITY], [ARTICLE I]).
+  if (inner === inner.toUpperCase() && /[A-Z]/.test(inner)) return false;
   return true;
 }
 

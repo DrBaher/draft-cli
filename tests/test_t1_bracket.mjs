@@ -50,3 +50,42 @@ test("detectBracket ignores headings and numeric refs", () => {
   const hits = detectBracket(body);
   assert.equal(hits.length, 0);
 });
+
+test("detectBracket skips markdown links", () => {
+  const body = "See [the docs](https://example.com) and [CC BY 4.0](https://creativecommons.org).";
+  const hits = detectBracket(body);
+  assert.equal(hits.length, 0);
+});
+
+test("detectBracket skips checkbox markers", () => {
+  const body = "- [x] Option A\n- [ ] Option B\n- [X] Option C";
+  const hits = detectBracket(body);
+  assert.equal(hits.length, 0);
+});
+
+test("detectBracket accepts sentence-shaped placeholders with punctuation", () => {
+  const body = "Effective: [Today’s date]. Term: [1 year(s)] from start.";
+  const hits = detectBracket(body);
+  assert.equal(hits.length, 2);
+  assert.equal(hits[0].inner, "Today’s date");
+  assert.equal(hits[1].inner, "1 year(s)");
+});
+
+test("detectBracket accepts long sentence-shaped placeholders", () => {
+  const body = "[Evaluating whether to enter into a business relationship with the other party.]";
+  const hits = detectBracket(body);
+  assert.equal(hits.length, 1);
+});
+
+test("detectBracket on real Common Paper coverpage finds all 5 placeholders", async () => {
+  const { readFileSync } = await import("node:fs");
+  const body = readFileSync("tests/fixtures/cp-mutual-nda-coverpage.md", "utf8");
+  const hits = detectBracket(body);
+  // Dedup by inner text (template repeats [1 year(s)])
+  const innerSet = new Set(hits.map(h => h.inner));
+  assert.ok(innerSet.has("Evaluating whether to enter into a business relationship with the other party."));
+  assert.ok(innerSet.has("Today’s date"));
+  assert.ok(innerSet.has("1 year(s)"));
+  assert.ok(innerSet.has("Fill in state"));
+  assert.ok(innerSet.has("Fill in city or county and state, i.e. “courts located in New Castle, DE”"));
+});
