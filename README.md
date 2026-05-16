@@ -43,13 +43,13 @@ goes through `sign-cli`. Each tool stays small and composable.
 ## Install
 
 ```sh
-npm install -g draft-cli
+npm install -g @drbaher/draft-cli
 ```
 
 Or run without installing:
 
 ```sh
-npx draft-cli@latest --demo
+npx @drbaher/draft-cli@latest --demo
 ```
 
 Requires Node.js ≥ 18. Tested on Ubuntu and macOS, Node 18 / 20 / 22.
@@ -75,7 +75,7 @@ and file paths for `--params`, `--output`, and `--dictionary`.
 No file authoring required. The bundled demo runs end-to-end:
 
 ```sh
-npx draft-cli@latest --demo
+npx @drbaher/draft-cli@latest --demo
 ```
 
 ```

@@ -182,7 +182,7 @@ import {
   detectBracket, detectMustache, detectDocxHighlight, detectHeuristic, detectLlm,
   parseSchema, loadSchema, runCascade, substitute, resolveValues,
   parseArgs, main, completionScript, VERSION, EXIT
-} from "draft-cli";
+} from "@drbaher/draft-cli";
 
 // Programmatic substitution
 const args = parseArgs(["x.md", "--party-a", "Acme"]);
@@ -200,7 +200,7 @@ Or invoke the full CLI in-process with captured I/O:
 
 ```js
 import { Writable } from "node:stream";
-import { main } from "draft-cli";
+import { main } from "@drbaher/draft-cli";
 
 class Capture extends Writable {
   constructor() { super(); this.s = ""; }
