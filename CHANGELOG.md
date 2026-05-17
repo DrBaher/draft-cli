@@ -4,6 +4,55 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.8.0 — 2026-05-17
+
+### Added
+
+- **LLM inference from a deal description** (last v2 item). New
+  `--from-deal PATH` flag reads a free-form deal description and
+  asks the configured T5 LLM provider to extract values for the
+  schema's declared placeholders:
+  ```sh
+  draft nda.md --from-deal deal-notes.txt --output draft.md
+  ```
+  Where `deal-notes.txt` is unstructured prose:
+  ```
+  Mutual NDA between Acme Corporation (DE) and Globex (UK), effective
+  June 1, 2026, for a 2-year term.
+  ```
+  The LLM is asked to fill `party_a`, `party_a_state`, `party_b`,
+  `effective_date`, etc. — only the keys already detected as
+  placeholders are extracted.
+- **Value-resolution precedence updated:**
+  `CLI flag > --params JSON > --from-deal (LLM) > --interactive > schema default > error`.
+  CLI / --params always win, so users can fix or override anything
+  the LLM got wrong.
+- **New public API:** `inferFromDeal(dealText, placeholders, providerCfg, { fetcher })`.
+
+### Decisions locked (V2_BRIEFS_REMAINING Q4.1–Q4.3)
+
+- **Q4.1 Provider:** same T5 provider config — `ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`, or explicit `DRAFT_LLM_*`. No separate inference
+  provider; one network surface, one set of env vars.
+- **Q4.2 Extra keys:** keys the LLM emits that aren't in the
+  detected placeholders are **warned** to stderr (not dropped
+  silently). The LLM gets a fresh list of allowed keys in the
+  prompt so this is rare in practice.
+- **Q4.3 Auto-LLM:** `--from-deal` does **not** require an
+  explicit `--llm` flag — the inference is implicit. `--no-llm`
+  still disables it (the user can opt out of the network call).
+
+### Notes
+
+- `--from-deal` errors are fatal (`EXIT.LLM` for provider /
+  network / parse failures). Users with bad provider configs see
+  the issue immediately rather than silently running with no
+  inferred values.
+- Bundle mode (v0.7.0) does not yet thread `--from-deal` through
+  per-template inference. Deferred to a follow-up; the shared
+  parameter resolution makes the single-doc API already useful
+  for bundles via `--params`.
+
 ## 0.7.0 — 2026-05-17
 
 ### Added

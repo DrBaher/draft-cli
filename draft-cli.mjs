@@ -70,7 +70,7 @@ import { fileURLToPath } from "node:url";
  */
 
 /** @type {string} */
-export const VERSION = "0.7.0";
+export const VERSION = "0.8.0";
 
 // ─── EXIT CODES ─────────────────────────────────────────────────────────────
 /**
@@ -279,6 +279,7 @@ export function parseArgs(argv) {
     if (a === "--params") { opts.params = argv[++i]; continue; }
     if (a === "--parties") { opts.parties = argv[++i]; continue; }
     if (a === "--bundle") { opts.bundle = argv[++i]; continue; }
+    if (a === "--from-deal") { opts.fromDeal = argv[++i]; continue; }
     if (a === "--output" || a === "-o") { opts.output = argv[++i]; continue; }
     if (a === "--syntax") {
       const v = argv[++i];
@@ -806,6 +807,95 @@ ${body.slice(0, 12000)}`;
     out.push({ match: it.text, inner: it.text, suggested_key: it.suggested_key });
   }
   return out;
+}
+
+/**
+ * v2 #4: LLM inference from a free-form deal description.
+ *
+ * Takes the prose deal description (the user's notes about parties, dates,
+ * amounts, etc.) and asks the configured T5 LLM provider to extract values
+ * for the placeholders the cascade has already detected. Returns
+ * `{values, extraKeys, warnings}`:
+ *
+ *   - values: `{key: string}` for every placeholder key the LLM filled
+ *   - extraKeys: any keys the LLM emitted that aren't in the placeholders list (Q4.2 → warn)
+ *   - warnings: human-readable messages for malformed entries
+ *
+ * Throws on missing provider config, missing `fetch`, network/HTTP error, or
+ * non-JSON LLM response — same failure boundaries as `detectLlm`.
+ *
+ * @param {string} dealText — free-form deal description
+ * @param {Placeholder[]} placeholders — the post-detection placeholder list
+ * @param {ReturnType<llmProviderFromEnv>} providerCfg
+ * @param {{ fetcher?: typeof fetch | null }} [opts]
+ * @returns {Promise<{ values: Object<string,string>, extraKeys: string[], warnings: string[] }>}
+ */
+export async function inferFromDeal(dealText, placeholders, providerCfg, { fetcher = (typeof fetch !== "undefined" ? fetch : null) } = {}) {
+  if (!fetcher) {
+    const e = new Error("fetch is not available; Node 18+ is required for --from-deal");
+    e.exitCode = EXIT.LLM;
+    throw e;
+  }
+  if (!providerCfg) {
+    const e = new Error("--from-deal requires an LLM provider; set ANTHROPIC_API_KEY / OPENAI_API_KEY / DRAFT_LLM_* in .env");
+    e.exitCode = EXIT.LLM;
+    throw e;
+  }
+  const wantedKeys = placeholders.map((p) => ({
+    key: p.key,
+    aliases: (p.aliases || []).slice(0, 4),
+    first_seen_as: p.first_seen_as,
+  }));
+  if (wantedKeys.length === 0) {
+    return { values: {}, extraKeys: [], warnings: [] };
+  }
+  const fieldList = wantedKeys.map((w) =>
+    `  - ${w.key} (template placeholder: "${w.first_seen_as}"${w.aliases.length > 1 ? `; aliases: ${w.aliases.join(", ")}` : ""})`
+  ).join("\n");
+  const prompt = `You are filling parameters for a legal-document drafting tool.
+A user has written prose describing a deal. Extract values for the following
+fields from the deal description. Output JSON ONLY in this exact shape, with
+no commentary:
+
+{"values":{"<key>":"<extracted_value>",...}}
+
+If a field can't be confidently extracted from the description, omit it (do
+NOT guess). Do not invent additional fields not in the list. Match the deal's
+language verbatim — don't reformat dates, currencies, or names.
+
+FIELDS:
+${fieldList}
+
+DEAL DESCRIPTION:
+${dealText.slice(0, 12000)}`;
+  const raw = await callLlm(providerCfg, prompt, fetcher);
+  let parsed;
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+  } catch {
+    const e = new Error(`LLM returned non-JSON response for --from-deal`);
+    e.exitCode = EXIT.LLM;
+    throw e;
+  }
+  const rawValues = (parsed && typeof parsed.values === "object" && parsed.values) ? parsed.values : {};
+  const knownKeys = new Set(placeholders.map((p) => p.key));
+  const values = {};
+  const extraKeys = [];
+  const warnings = [];
+  for (const [k, v] of Object.entries(rawValues)) {
+    if (!knownKeys.has(k)) {
+      extraKeys.push(k);
+      continue;
+    }
+    if (v === null || v === undefined) continue;
+    if (typeof v !== "string" && typeof v !== "number") {
+      warnings.push(`--from-deal: value for "${k}" was ${typeof v}, expected string; skipped`);
+      continue;
+    }
+    values[k] = String(v);
+  }
+  return { values, extraKeys, warnings };
 }
 
 async function callLlm(cfg, prompt, fetcher) {
@@ -1460,7 +1550,7 @@ export function loadBundle(path) {
  * @param {{ prompter?: (p: Placeholder) => Promise<string|null> }} [io]
  * @returns {Promise<ResolvedValues>}
  */
-export async function resolveValues(placeholders, opts, paramsObj, { prompter = nodePrompter } = {}) {
+export async function resolveValues(placeholders, opts, paramsObj, { prompter = nodePrompter, inferred = null } = {}) {
   const resolved = {};
   const missing = [];
   const sources = {};
@@ -1473,6 +1563,12 @@ export async function resolveValues(placeholders, opts, paramsObj, { prompter = 
     if (Object.prototype.hasOwnProperty.call(paramsObj, p.key)) {
       resolved[p.key] = String(paramsObj[p.key]);
       sources[p.key] = "params";
+      continue;
+    }
+    // v2 #4: --from-deal LLM-inferred values, between --params and --interactive.
+    if (inferred && Object.prototype.hasOwnProperty.call(inferred, p.key)) {
+      resolved[p.key] = String(inferred[p.key]);
+      sources[p.key] = "deal-llm";
       continue;
     }
     if (opts.interactive) {
@@ -2089,7 +2185,7 @@ export async function cmdListPlaceholders(opts, input, schema, envObj, { fetcher
   return EXIT.OK;
 }
 
-export async function cmdValidate(opts, input, schema, paramsObj, envObj, { fetcher, out, err, parties = null } = {}) {
+export async function cmdValidate(opts, input, schema, paramsObj, envObj, { fetcher, out, err, parties = null, dealText = null } = {}) {
   const result = await runCascade(input, opts, schema, envObj, { fetcher });
   if (result.tier === "none") {
     err.write(paint("error: no placeholders detected by any tier\n", "red", err));
@@ -2109,7 +2205,24 @@ export async function cmdValidate(opts, input, schema, paramsObj, envObj, { fetc
     }
     return EXIT.VALIDATION;
   }
-  const { resolved, missing, sources } = await resolveValues(result.placeholders, opts, paramsObj);
+  // v2 #4: --from-deal LLM inference (when dealText is present and
+  // --no-llm not set). Provider config comes from env. Errors are fatal
+  // to keep the user from running with partial inferred values.
+  let inferred = null;
+  if (dealText && !opts.noLlm) {
+    try {
+      const r = await inferFromDeal(dealText, result.placeholders, llmProviderFromEnv(envObj), { fetcher });
+      inferred = r.values;
+      for (const k of r.extraKeys) {
+        err.write(paint(`warning: --from-deal LLM emitted unknown key "${k}" (not in template/schema)\n`, "yellow", err));
+      }
+      for (const w of r.warnings) err.write(paint(`warning: ${w}\n`, "yellow", err));
+    } catch (e) {
+      err.write(paint(`error: ${e.message}\n`, "red", err));
+      return e.exitCode || EXIT.LLM;
+    }
+  }
+  const { resolved, missing, sources } = await resolveValues(result.placeholders, opts, paramsObj, { inferred });
   if (missing.length > 0) {
     printMissing(missing, err);
     if (opts.json) {
@@ -2170,7 +2283,7 @@ export async function cmdValidate(opts, input, schema, paramsObj, envObj, { fetc
   return EXIT.OK;
 }
 
-export async function cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher, out, err, parties = null } = {}) {
+export async function cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher, out, err, parties = null, dealText = null } = {}) {
   const result = await runCascade(input, opts, schema, envObj, { fetcher });
   if (result.tier === "none") {
     const hasProvider = Boolean(llmProviderFromEnv(envObj));
@@ -2221,7 +2334,25 @@ export async function cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher
     return EXIT.VALIDATION;
   }
 
-  const { resolved, missing, sources } = await resolveValues(result.placeholders, opts, paramsObj);
+  // v2 #4: --from-deal LLM inference (when dealText is present and
+  // --no-llm not set). Provider config comes from env. Errors are fatal
+  // to keep the user from running with partial inferred values.
+  let inferred = null;
+  if (dealText && !opts.noLlm) {
+    try {
+      const r = await inferFromDeal(dealText, result.placeholders, llmProviderFromEnv(envObj), { fetcher });
+      inferred = r.values;
+      for (const k of r.extraKeys) {
+        err.write(paint(`warning: --from-deal LLM emitted unknown key "${k}" (not in template/schema)\n`, "yellow", err));
+      }
+      for (const w of r.warnings) err.write(paint(`warning: ${w}\n`, "yellow", err));
+    } catch (e) {
+      err.write(paint(`error: ${e.message}\n`, "red", err));
+      return e.exitCode || EXIT.LLM;
+    }
+  }
+
+  const { resolved, missing, sources } = await resolveValues(result.placeholders, opts, paramsObj, { inferred });
   // Footgun guard: flag --typo'd-key VALUE that didn't match any detected
   // placeholder. Without this warning, a typo'd flag is silently dropped and
   // the user sees only a "missing required" error without the connection.
@@ -2839,13 +2970,22 @@ export async function main(argv, io = {}) {
     return EXIT.IO;
   }
 
-  let input, schema, paramsObj, envObj, parties;
+  let input, schema, paramsObj, envObj, parties, dealText;
   try {
     input = await resolveInput(opts.positional[0], { spawner, stdinReader });
     schema = loadSchema(input.path);
     paramsObj = loadParamsFile(opts.params);
     envObj = effectiveEnv(cwd, processEnv);
     parties = loadParties(opts.parties || null);
+    // v2 #4: --from-deal PATH reads a free-form deal description.
+    if (opts.fromDeal) {
+      if (!existsSync(opts.fromDeal)) {
+        const e = new Error(`deal description file not found: ${opts.fromDeal}`);
+        e.exitCode = EXIT.IO;
+        throw e;
+      }
+      dealText = readFileSync(opts.fromDeal, "utf8");
+    }
   } catch (e) {
     err.write(paint(`error: ${e.message}\n`, "red", err));
     return e.exitCode || EXIT.IO;
@@ -2856,9 +2996,9 @@ export async function main(argv, io = {}) {
       return await cmdListPlaceholders(opts, input, schema, envObj, { fetcher, out, err });
     }
     if (opts.validate) {
-      return await cmdValidate(opts, input, schema, paramsObj, envObj, { fetcher, out, err, parties });
+      return await cmdValidate(opts, input, schema, paramsObj, envObj, { fetcher, out, err, parties, dealText });
     }
-    return await cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher, out, err, parties });
+    return await cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher, out, err, parties, dealText });
   } catch (e) {
     err.write(paint(`error: ${e.message}\n`, "red", err));
     return e.exitCode || EXIT.IO;

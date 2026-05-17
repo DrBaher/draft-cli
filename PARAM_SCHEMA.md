@@ -515,6 +515,71 @@ keys and their sources.
 Programmatic API: `loadBundle(path)` parses + validates; `cmdBundle`
 runs the orchestration with the same IO contract as `cmdDraft`.
 
+### LLM inference from a deal description (v0.8.0, opt-in)
+
+`--from-deal PATH` reads a free-form deal description and asks the
+configured T5 LLM provider to extract values for the schema's
+declared placeholders. The inverse of T5 detection — instead of
+inferring *where* placeholders are in a template, infer *what
+values* they should take from the deal prose:
+
+```sh
+draft nda.md --from-deal deal-notes.txt --output draft.md
+```
+
+```
+# deal-notes.txt
+Mutual NDA between Acme Corporation (DE) and Globex (UK),
+effective June 1, 2026, for a 2-year term.
+```
+
+Then `[Party A]` → `Acme Corporation`, `[Effective Date]` →
+`June 1, 2026`, etc., without any `--party-a` / `--effective-date`
+flags.
+
+**Value-resolution precedence** with `--from-deal`:
+
+```
+CLI flag  >  --params JSON  >  --from-deal (LLM)  >  --interactive  >  schema default  >  error
+```
+
+CLI / --params always win, so users can fix or override anything the
+LLM got wrong without re-running inference.
+
+**Q4.1 locked:** same T5 provider config (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, or explicit `DRAFT_LLM_*`). One network surface,
+one set of env vars.
+
+**Q4.2 locked:** extra keys (LLM emits keys not in the detected
+placeholder list) are **warned** to stderr, not silently dropped.
+The LLM gets the allowed-key list in the prompt so this is rare in
+practice.
+
+**Q4.3 locked:** `--from-deal` does **not** require explicit
+`--llm` — the inference is implicit when the flag is present.
+`--no-llm` still disables the inference call (the user can opt
+out of the network).
+
+**Provider missing:** if no LLM provider is configured (no
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DRAFT_LLM_*` in env),
+`--from-deal` errors immediately with `EXIT.LLM` (exit 5) and a
+clear message. Same for network / HTTP errors / non-JSON LLM
+responses.
+
+**Resolution interaction with typed parameters:** inferred values
+go through the same typed-normalization step as user-supplied
+values. So an LLM that returns `"June 1, 2026"` for a `type: date`
+parameter with `format: yyyy-MM-d` gets normalized to `2026-06-1`
+before substitution.
+
+**Bundle mode (v0.7.0) interaction:** bundles do not currently
+thread `--from-deal` through per-template inference. The shared
+parameter resolution already accepts `--params` JSON, which is the
+simpler structured-data path for bundle workflows. Deferred to a
+future release.
+
+Programmatic API: `inferFromDeal(dealText, placeholders, providerCfg, { fetcher })`.
+
 ### Orphan handling (Q4 locked)
 
 Schema declares a key whose alias list matches no detected phrase →
