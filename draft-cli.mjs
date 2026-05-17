@@ -70,7 +70,7 @@ import { fileURLToPath } from "node:url";
  */
 
 /** @type {string} */
-export const VERSION = "0.8.2";
+export const VERSION = "0.9.0";
 
 // ─── EXIT CODES ─────────────────────────────────────────────────────────────
 /**
@@ -219,6 +219,7 @@ const KNOWN_BOOLEAN = new Set([
   "--no-llm", "--llm", "--check-llm",
   "--silent", "-q",
   "--diff",
+  "--strict-runs",
 ]);
 
 const KNOWN_VALUE = new Set([
@@ -255,6 +256,7 @@ export function parseArgs(argv) {
     yesHeuristic: false,
     noLlm: false,
     forceLlm: false,
+    strictRuns: false,
     help: false,
     version: false,
     paramFlags: {}, // canonical_key -> value (set from --kebab-name VALUE)
@@ -276,6 +278,7 @@ export function parseArgs(argv) {
     if (a === "--check-llm") { opts.checkLlm = true; continue; }
     if (a === "--silent" || a === "-q") { opts.silent = true; continue; }
     if (a === "--diff") { opts.diff = true; continue; }
+    if (a === "--strict-runs") { opts.strictRuns = true; continue; }
     if (a === "--params") { opts.params = argv[++i]; continue; }
     if (a === "--parties") { opts.parties = argv[++i]; continue; }
     if (a === "--bundle") { opts.bundle = argv[++i]; continue; }
@@ -384,6 +387,9 @@ OPTIONS
   --llm                 Assert env-configured LLM; fail-fast if not.
   --check-llm           One-token roundtrip to the configured provider.
   --diff                Show substitution table without writing output.
+  --strict-runs         .docx only: skip placeholders that span multiple
+                        runs (v0.2.0 behavior). Default is to merge runs
+                        and emit a note for each merge.
   --dictionary PATH     Override the bundled heuristic dictionary.
   --completion bash|zsh Emit a shell completion script to stdout.
   --<param-name> VALUE  Set a parameter directly. Kebab -> snake_case.
@@ -2034,10 +2040,17 @@ function replaceAll(s, find, repl) {
 
 /**
  * Substitute placeholder values *inside the Word XML*, preserving runs
- * and styling. Returns a new XML string plus warnings for any placeholder
- * whose text spans multiple `<w:t>` runs in the source — these are
- * skipped rather than substituted (merging the runs would lose styling
- * information; leaving them is reversible).
+ * and styling.
+ *
+ * Two-phase strategy (v0.9.0):
+ *   1. Single-run pass — substitute when the placeholder text lives
+ *      entirely inside one `<w:t>` element. Styling is fully preserved.
+ *   2. Cross-run merge pass (default, opt out with `mergeRuns: false`) —
+ *      walk each `<w:p>` paragraph and, for placeholders that span
+ *      multiple runs inside the same paragraph, collapse the contributing
+ *      runs into one with the *first* contributing run's `<w:rPr>`. Mid-
+ *      placeholder styling variations are lost; styling on the runs
+ *      flanking the placeholder is preserved.
  *
  * For T1 (bracket) / T2 (mustache) the search text is the literal match
  * (e.g. `[Party A]` or `{{party_a}}`). For T3 (docx-highlight), T4
@@ -2048,18 +2061,30 @@ function replaceAll(s, find, repl) {
  * @param {Placeholder[]} placeholders
  * @param {Object<string,string>} values — `{ key: resolvedValue }`.
  * @param {Tier} tier
- * @returns {{ xml: string, warnings: string[] }}
+ * @param {{ mergeRuns?: boolean }} [opts] — when `mergeRuns` is `false`,
+ *   skip phase 2 and emit `skipped` warnings for cross-run placeholders
+ *   (v0.2.0 behavior, exposed via `--strict-runs`).
+ * @returns {{ xml: string, merged: string[], skipped: string[] }} —
+ *   `merged` lists placeholder keys whose cross-run substitution lost
+ *   in-placeholder styling; `skipped` lists keys that could not be
+ *   substituted (cross-run with `mergeRuns: false`, or crossing a
+ *   paragraph boundary even with merge enabled).
  */
-export function substituteDocxXml(xml, placeholders, values, tier) {
-  let out = xml;
-  const warnings = [];
+export function substituteDocxXml(xml, placeholders, values, tier, opts = {}) {
+  const mergeRuns = opts.mergeRuns !== false;
+  const merged = new Set();
+  const skipped = new Set();
   const originalText = docxXmlToText(xml);
+
+  // Phase 1: single-run substitution (lossless, identical to v0.2.0).
+  let out = xml;
+  const remaining = []; // { key, find, value, literal } still needing cross-run work
   for (const p of placeholders) {
     const v = values[p.key];
     if (v === undefined) continue;
     for (const h of p.hits) {
-      const find = (tier === "bracket" || tier === "mustache") ? h.match : h.inner;
       const literal = (tier === "bracket" || tier === "mustache");
+      const find = literal ? h.match : h.inner;
       const buildRe = (global) => literal
         ? new RegExp(escapeRegex(find), global ? "g" : "")
         : new RegExp(`(?<![A-Za-z0-9])${escapeRegex(find)}(?![A-Za-z0-9])`, global ? "g" : "");
@@ -2074,15 +2099,163 @@ export function substituteDocxXml(xml, placeholders, values, tier) {
         return `<w:t${attrs || ""}>${encodeXml(replaced)}</w:t>`;
       });
       if (!madeSubstitution && buildRe(false).test(originalText)) {
-        warnings.push(
-          `docx substitution skipped for "${find}" (→ "${v}"): the placeholder spans ` +
-          `multiple text runs in the source, which would lose run-level styling if merged. ` +
-          `Open the document, retype the placeholder so it lives in a single run, and retry.`
-        );
+        remaining.push({ key: p.key, find, value: v, literal });
       }
     }
   }
-  return { xml: out, warnings };
+
+  // Phase 2: cross-run merge (opt out with mergeRuns:false).
+  if (remaining.length === 0) {
+    return { xml: out, merged: [], skipped: [] };
+  }
+  if (!mergeRuns) {
+    for (const r of remaining) skipped.add(r.key);
+    return { xml: out, merged: [], skipped: [...skipped] };
+  }
+  out = mergeAcrossRuns(out, remaining, merged, skipped);
+  return { xml: out, merged: [...merged], skipped: [...skipped] };
+}
+
+// Phase 2 helper for substituteDocxXml. Walks each <w:p> and, for each
+// remaining placeholder, finds occurrences in the concatenated run text
+// and rewrites the contributing runs into one merged run that uses the
+// FIRST contributing run's <w:rPr>. Non-run XML between merged runs
+// (bookmarks, proof markers, etc.) is dropped — the surrounding flanks
+// keep their non-run markup.
+function mergeAcrossRuns(xml, remaining, merged, skipped) {
+  const paraRe = /(<w:p\b[^>]*>)([\s\S]*?)(<\/w:p>)/g;
+  const replacedXml = xml.replace(paraRe, (full, open, body, close) => {
+    const parsed = parseParaParts(body);
+    if (parsed.runs.length === 0) return full;
+    let parts = parsed.parts; // mutable list of { type: "run", text, rPr, xml } | { type: "raw", xml }
+
+    for (const r of remaining) {
+      const re = r.literal
+        ? new RegExp(escapeRegex(r.find), "g")
+        : new RegExp(`(?<![A-Za-z0-9])${escapeRegex(r.find)}(?![A-Za-z0-9])`, "g");
+      // Collect ALL match ranges in the current text in one pass, then
+      // apply them right-to-left so earlier offsets remain valid. This
+      // mirrors the non-overlapping semantics of String#replace and
+      // prevents re-matching a substituted region.
+      const text = partsToText(parts);
+      const ranges = [];
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        ranges.push({ start: m.index, end: m.index + m[0].length });
+        if (m[0].length === 0) re.lastIndex++; // defensive
+      }
+      if (ranges.length === 0) continue;
+      for (let i = ranges.length - 1; i >= 0; i--) {
+        const range = findContributingRunsInParts(parts, ranges[i].start, ranges[i].end);
+        if (!range) continue;
+        parts = buildMergedParts(parts, range, r.value);
+        merged.add(r.key);
+      }
+    }
+
+    return open + parts.map((p) => p.xml).join("") + close;
+  });
+
+  // Any placeholder we never managed to substitute (crosses paragraph
+  // boundary, etc.) goes into skipped — unless it was merged elsewhere
+  // (partial substitution still counts as merged).
+  for (const r of remaining) {
+    if (!merged.has(r.key)) skipped.add(r.key);
+  }
+  for (const k of merged) skipped.delete(k);
+
+  return replacedXml;
+}
+
+// Parse a paragraph body into an ordered list of parts. Run parts carry
+// decoded text + rPr; raw parts (non-run XML between runs) pass through
+// verbatim.
+function parseParaParts(body) {
+  const parts = [];
+  const runs = [];
+  const runRe = /<w:r\b[^>]*>[\s\S]*?<\/w:r>/g;
+  let lastIdx = 0;
+  let m;
+  while ((m = runRe.exec(body)) !== null) {
+    if (m.index > lastIdx) {
+      parts.push({ type: "raw", xml: body.slice(lastIdx, m.index) });
+    }
+    const runXml = m[0];
+    const rprMatch = /<w:rPr>[\s\S]*?<\/w:rPr>/.exec(runXml);
+    const rPr = rprMatch ? rprMatch[0] : "";
+    const tRe = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+    const texts = [];
+    let tm;
+    while ((tm = tRe.exec(runXml)) !== null) texts.push(decodeXml(tm[1]));
+    const text = texts.join("");
+    const part = { type: "run", xml: runXml, text, rPr };
+    parts.push(part);
+    runs.push(part);
+    lastIdx = m.index + runXml.length;
+  }
+  if (lastIdx < body.length) {
+    parts.push({ type: "raw", xml: body.slice(lastIdx) });
+  }
+  return { parts, runs };
+}
+
+function partsToText(parts) {
+  let s = "";
+  for (const p of parts) if (p.type === "run") s += p.text;
+  return s;
+}
+
+// Find the run-parts that contribute to the text range [start, end).
+// Returns { firstIdx, lastIdx, prefix, suffix } where firstIdx/lastIdx
+// are indices into `parts` (NOT into a runs-only list), and prefix/suffix
+// are the leading/trailing text of the first/last run outside the match.
+function findContributingRunsInParts(parts, start, end) {
+  let cursor = 0;
+  let firstIdx = -1;
+  let lastIdx = -1;
+  let prefix = "";
+  let suffix = "";
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.type !== "run") continue;
+    const runStart = cursor;
+    const runEnd = cursor + p.text.length;
+    if (firstIdx === -1 && runEnd > start) {
+      firstIdx = i;
+      prefix = p.text.slice(0, start - runStart);
+    }
+    if (firstIdx !== -1 && runEnd >= end) {
+      lastIdx = i;
+      suffix = p.text.slice(end - runStart);
+      break;
+    }
+    cursor = runEnd;
+  }
+  if (firstIdx === -1 || lastIdx === -1) return null;
+  return { firstIdx, lastIdx, prefix, suffix };
+}
+
+// Splice parts: replace parts[firstIdx..lastIdx] (and intervening raw
+// parts) with new run parts for the merged region. The merged run uses
+// the FIRST contributing run's rPr for prefix+replacement; if there's a
+// suffix from the LAST contributing run, it becomes a second run with
+// the LAST contributing run's rPr (so styling flanking the placeholder
+// is preserved).
+function buildMergedParts(parts, range, replacementValue) {
+  const first = parts[range.firstIdx];
+  const last = parts[range.lastIdx];
+  const newText = range.prefix + replacementValue;
+  const mergedXml = `<w:r>${first.rPr}<w:t xml:space="preserve">${encodeXml(newText)}</w:t></w:r>`;
+  const newParts = [
+    ...parts.slice(0, range.firstIdx),
+    { type: "run", xml: mergedXml, text: newText, rPr: first.rPr },
+  ];
+  if (range.suffix.length > 0) {
+    const suffixXml = `<w:r>${last.rPr}<w:t xml:space="preserve">${encodeXml(range.suffix)}</w:t></w:r>`;
+    newParts.push({ type: "run", xml: suffixXml, text: range.suffix, rPr: last.rPr });
+  }
+  for (let i = range.lastIdx + 1; i < parts.length; i++) newParts.push(parts[i]);
+  return newParts;
 }
 
 /**
@@ -2436,10 +2609,24 @@ export async function cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher
   let writtenPath = null;
   if (docxOut) {
     try {
-      const { xml: newXml, warnings: docxWarnings } = substituteDocxXml(
-        input.docxXml, result.placeholders, resolved, result.tier
+      const { xml: newXml, merged, skipped } = substituteDocxXml(
+        input.docxXml, result.placeholders, resolved, result.tier,
+        { mergeRuns: !opts.strictRuns }
       );
-      if (docxWarnings.length) result.warnings.push(...docxWarnings);
+      for (const key of merged) {
+        result.warnings.push(
+          `docx run merge applied for "${key}": placeholder spanned multiple runs; ` +
+          `surrounding styling kept, in-placeholder styling collapsed to the first run's. ` +
+          `Use --strict-runs to skip cross-run substitution instead.`
+        );
+      }
+      for (const key of skipped) {
+        result.warnings.push(
+          `docx substitution skipped for "${key}": placeholder spans multiple runs` +
+          `${opts.strictRuns ? " and --strict-runs is set" : " across a paragraph boundary"}. ` +
+          `Open the document, retype the placeholder so it lives in a single run, and retry.`
+        );
+      }
       const buf = await writeDocxBuffer(input.path, newXml);
       writeFileSync(docxOut.path, buf);
       writtenPath = docxOut.path;
@@ -2603,10 +2790,24 @@ export async function cmdBundle(opts, bundle, paramsObj, envObj, { fetcher, out,
     try {
       // For .docx input with .docx output: round-trip via substituteDocxXml.
       if (e.input.kind === "docx" && extname(e.output) === ".docx") {
-        const { xml: newXml, warnings: dw } = substituteDocxXml(
-          e.input.docxXml, e.cascade.placeholders, resolved, e.cascade.tier
+        const { xml: newXml, merged, skipped } = substituteDocxXml(
+          e.input.docxXml, e.cascade.placeholders, resolved, e.cascade.tier,
+          { mergeRuns: !opts.strictRuns }
         );
-        if (dw.length) for (const w of dw) err.write(paint(`warning (entry ${i}): ${w}\n`, "yellow", err));
+        for (const key of merged) {
+          err.write(paint(
+            `warning (entry ${i}): docx run merge applied for "${key}": placeholder spanned multiple runs; ` +
+            `surrounding styling kept, in-placeholder styling collapsed to the first run's.\n`,
+            "yellow", err,
+          ));
+        }
+        for (const key of skipped) {
+          err.write(paint(
+            `warning (entry ${i}): docx substitution skipped for "${key}": placeholder spans multiple runs` +
+            `${opts.strictRuns ? " and --strict-runs is set" : " across a paragraph boundary"}.\n`,
+            "yellow", err,
+          ));
+        }
         const buf = await writeDocxBuffer(e.input.path, newXml);
         writeFileSync(e.output, buf);
       } else {
@@ -2668,6 +2869,7 @@ const BOOLEAN_FLAGS_FOR_COMPLETION = [
   "--why", "--json", "--silent", "--interactive",
   "--no-heuristic", "--yes-heuristic",
   "--no-llm", "--llm",
+  "--strict-runs",
 ];
 
 const VALUE_FLAGS_FOR_COMPLETION = [
@@ -2761,6 +2963,7 @@ _draft() {
     '--llm[assert env-configured LLM, fail-fast if missing]'
     '--check-llm[one-token roundtrip to verify provider config]'
     '--diff[show substitution table without writing output]'
+    '--strict-runs[docx: skip placeholders that span multiple runs]'
     '--params[JSON params file]:params file:_files -g "*.json"'
     '--output[output path]:output:_files'
     '-o[output path]:output:_files'

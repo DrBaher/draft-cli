@@ -4,6 +4,70 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.9.0 — 2026-05-17
+
+### Changed (default behavior)
+
+- **`.docx` substitution now merges runs across a placeholder by
+  default.** Real-world Word documents (notably the Common Paper
+  templates) often split `[Fill in: …]` placeholders across two or
+  three `<w:r>` runs because brackets and inner text carry different
+  styling. v0.2.0 detected this case and *skipped* the substitution
+  with a warning, leaving the user to retype the placeholder in
+  Word — fine for the rare case, but a blocker on most production
+  contracts where every placeholder spans runs.
+
+  v0.9.0 changes the default: when a placeholder spans multiple runs
+  inside the same paragraph, `substituteDocxXml` now collapses the
+  contributing runs into one run that uses the **first** contributing
+  run's `<w:rPr>`. Mid-placeholder styling variations are lost (e.g.
+  if `[` was bold and the inner text was italic, the merged run is
+  bold). Styling on the runs flanking the placeholder is preserved:
+  any trailing text from the last contributing run keeps its
+  original `<w:rPr>` as a second run. Each merge emits a `warning:
+  docx run merge applied for "<key>": …` line on stderr so the user
+  knows what was rewritten.
+
+- **New `--strict-runs` flag** restores v0.2.0 behavior: cross-run
+  placeholders are skipped (not merged) and emit a `skipped`
+  warning. Use this when you want to preserve every style boundary
+  inside placeholders and are willing to retype them in Word.
+
+- **Cross-paragraph placeholders are still skipped** regardless of
+  `--strict-runs` — collapsing runs across a `<w:p>` boundary would
+  destroy paragraph structure, which is rarely what the user wants.
+
+### API
+
+- `substituteDocxXml(xml, placeholders, values, tier, opts?)` —
+  signature gains a fifth `opts` argument with `{ mergeRuns?:
+  boolean }` (default `true`). Return shape changes from
+  `{ xml, warnings: string[] }` to `{ xml, merged: string[],
+  skipped: string[] }` — the two arrays list placeholder keys, and
+  callers (or the CLI) format their own warning text.
+
+### Decisions locked (Q1.1 revision)
+
+- **Q1.1 (.docx round-trip behavior, revised):** v0.2.0 said split-
+  run placeholders are skipped with a warning. v0.9.0 changes the
+  default to merge with the first contributing run's `<w:rPr>` —
+  the trade-off (in-placeholder style loss) is acceptable because
+  (a) most templates use uniform styling inside `[…]` anyway and
+  (b) the alternative (skipping by default) blocks ~every real-
+  world Common Paper-style template. `--strict-runs` is the
+  documented escape hatch for users who care about every style
+  boundary.
+
+### Notes
+
+- The original `originalText` heuristic (scan the whole document
+  for the find string after a failed per-run substitution) is now
+  the trigger for phase 2 (cross-run merge) rather than a warning.
+- Tests updated: the v0.2.0 "spans multiple runs → skipped"
+  assertion is preserved under `--strict-runs`; new tests cover the
+  merge path (Common Paper-style split brackets, prefix/suffix
+  styling preservation, multiple split occurrences per paragraph).
+
 ## 0.8.2 — 2026-05-17
 
 ### Docs
