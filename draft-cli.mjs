@@ -70,7 +70,7 @@ import { fileURLToPath } from "node:url";
  */
 
 /** @type {string} */
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";
 
 // ─── EXIT CODES ─────────────────────────────────────────────────────────────
 /**
@@ -278,6 +278,7 @@ export function parseArgs(argv) {
     if (a === "--diff") { opts.diff = true; continue; }
     if (a === "--params") { opts.params = argv[++i]; continue; }
     if (a === "--parties") { opts.parties = argv[++i]; continue; }
+    if (a === "--bundle") { opts.bundle = argv[++i]; continue; }
     if (a === "--output" || a === "-o") { opts.output = argv[++i]; continue; }
     if (a === "--syntax") {
       const v = argv[++i];
@@ -1376,6 +1377,79 @@ export function resolveRefs(resolved, sources, parties) {
 }
 
 /**
+ * Load and validate a bundle definition (v2 #6). Bundles describe
+ * multiple templates that should be filled with the same set of
+ * parameter values in one invocation:
+ *
+ *   {
+ *     "_meta": { "schema_version": 1 },
+ *     "outputs": [
+ *       { "template": "msa/v3.md",        "output": "out/msa.md" },
+ *       { "template": "order-form/v3.md", "output": "out/order-form.md" }
+ *     ]
+ *   }
+ *
+ * Returns the parsed bundle. Throws on missing file, invalid JSON, no
+ * `outputs` array, empty `outputs`, missing `template`/`output` on an
+ * entry, or duplicate output paths.
+ *
+ * @param {string} path
+ * @returns {{ outputs: Array<{ template: string, output: string }> }}
+ * @throws {Error} with `.exitCode = EXIT.IO`
+ */
+export function loadBundle(path) {
+  if (!existsSync(path)) {
+    const e = new Error(`bundle file not found: ${path}`);
+    e.exitCode = EXIT.IO;
+    throw e;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    const e = new Error(`could not parse bundle ${path}: ${err.message}`);
+    e.exitCode = EXIT.IO;
+    throw e;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    const e = new Error(`bundle ${path} must be a JSON object`);
+    e.exitCode = EXIT.IO;
+    throw e;
+  }
+  if (!Array.isArray(parsed.outputs) || parsed.outputs.length === 0) {
+    const e = new Error(`bundle ${path}: missing or empty "outputs" array`);
+    e.exitCode = EXIT.IO;
+    throw e;
+  }
+  const seenOutputs = new Set();
+  for (let i = 0; i < parsed.outputs.length; i++) {
+    const o = parsed.outputs[i];
+    if (!o || typeof o !== "object" || Array.isArray(o)) {
+      const e = new Error(`bundle ${path}: outputs[${i}] must be an object`);
+      e.exitCode = EXIT.IO;
+      throw e;
+    }
+    if (typeof o.template !== "string" || !o.template) {
+      const e = new Error(`bundle ${path}: outputs[${i}].template must be a non-empty string`);
+      e.exitCode = EXIT.IO;
+      throw e;
+    }
+    if (typeof o.output !== "string" || !o.output) {
+      const e = new Error(`bundle ${path}: outputs[${i}].output must be a non-empty string`);
+      e.exitCode = EXIT.IO;
+      throw e;
+    }
+    if (seenOutputs.has(o.output)) {
+      const e = new Error(`bundle ${path}: outputs[${i}].output "${o.output}" is duplicated`);
+      e.exitCode = EXIT.IO;
+      throw e;
+    }
+    seenOutputs.add(o.output);
+  }
+  return { outputs: parsed.outputs.map(o => ({ template: o.template, output: o.output })) };
+}
+
+/**
  * Resolve a value for every placeholder using the locked precedence chain:
  * CLI flag > `--params` JSON > `--interactive` prompt > schema default >
  * (missing). Empty-string CLI values are considered supplied (not missing).
@@ -2282,6 +2356,151 @@ export async function cmdDraft(opts, input, schema, paramsObj, envObj, { fetcher
   return EXIT.OK;
 }
 
+/**
+ * cmdBundle — orchestrate filling multiple templates with one shared
+ * parameter set (v2 #6). For each bundle entry:
+ *   1. resolveInput + loadSchema (per template)
+ *   2. runCascade (per template)
+ *   3. union placeholders by key
+ * Then resolve values once across the union (CLI/--params/interactive/
+ * default), run typed-param normalization + computed values, and write
+ * each output. Q3.2 locked: any pre-write error (no-detection in an
+ * entry, missing required param across the union, type / computed
+ * failure) aborts the whole bundle before any file is written.
+ *
+ * @param {Object} opts
+ * @param {{outputs: Array<{template: string, output: string}>}} bundle
+ * @param {Object} paramsObj
+ * @param {Object} envObj
+ * @returns {Promise<number>} exit code
+ */
+export async function cmdBundle(opts, bundle, paramsObj, envObj, { fetcher, out, err, spawner, stdinReader, parties = null } = {}) {
+  // Phase 1: load each template + schema, run detection.
+  const entries = [];
+  for (let i = 0; i < bundle.outputs.length; i++) {
+    const o = bundle.outputs[i];
+    let input, schema, cascade;
+    try {
+      input = await resolveInput(o.template, { spawner, stdinReader });
+      schema = loadSchema(input.path);
+    } catch (e) {
+      err.write(paint(`error: bundle entry ${i} "${o.template}": ${e.message}\n`, "red", err));
+      return e.exitCode || EXIT.IO;
+    }
+    cascade = await runCascade(input, opts, schema, envObj, { fetcher });
+    if (cascade.tier === "none") {
+      err.write(paint(`error: bundle entry ${i} "${o.template}": no placeholders detected by any tier\n`, "red", err));
+      return EXIT.VALIDATION;
+    }
+    // v2 #7 positional errors per template — abort early.
+    if (cascade.positional_errors && cascade.positional_errors.length > 0) {
+      for (const pe of cascade.positional_errors) {
+        err.write(paint(`error: bundle entry ${i} "${o.template}" positional placeholder "${pe.key}": ${pe.reason}\n`, "red", err));
+      }
+      return EXIT.VALIDATION;
+    }
+    // Orphan check per template (schema declares something not detected here).
+    const orphans = findOrphans(schema, cascade.placeholders, cascade.detected_schema_keys);
+    if (orphans.length > 0) {
+      for (const oo of orphans) {
+        err.write(paint(`error: bundle entry ${i} "${o.template}" schema declares "${oo.key}" but no matching phrase was detected by tier '${cascade.tier}'.\n`, "red", err));
+      }
+      return EXIT.VALIDATION;
+    }
+    entries.push({ output: o.output, input, schema, cascade });
+  }
+
+  // Phase 2: union placeholders by key. Q3.3 locked: union semantics —
+  // a key declared/detected in any template applies to all. First
+  // occurrence's metadata wins (required, default, type, format, etc.);
+  // a per-template later occurrence may have richer aliases but we keep
+  // the first canonical entry.
+  const unionPlaceholders = [];
+  const seenKeys = new Set();
+  for (const e of entries) {
+    for (const p of e.cascade.placeholders) {
+      if (seenKeys.has(p.key)) continue;
+      seenKeys.add(p.key);
+      unionPlaceholders.push(p);
+    }
+  }
+
+  // Phase 3: shared value resolution + footgun guard.
+  const { resolved, missing, sources } = await resolveValues(unionPlaceholders, opts, paramsObj);
+  const declaredKeys = new Set(unionPlaceholders.map((p) => p.key));
+  const unusedFlags = Object.keys(opts.paramFlags).filter((k) => !declaredKeys.has(k));
+  for (const u of unusedFlags) {
+    err.write(paint(`warning: flag --${u.replace(/_/g, "-")} did not match any placeholder in any bundle template (possible typo?)\n`, "yellow", err));
+  }
+  if (missing.length > 0) {
+    printMissing(missing, err);
+    return EXIT.VALIDATION;
+  }
+
+  // v2 #5: parties.json refs resolve across the union before typed
+  // normalization (same order as cmdDraft / cmdValidate).
+  const refCheck = resolveRefs(resolved, sources, parties);
+  if (!refCheck.ok) {
+    for (const re of refCheck.errors) {
+      err.write(paint(`error: parties reference failed for "${re.key}": ${re.message}\n`, "red", err));
+    }
+    return EXIT.VALIDATION;
+  }
+
+  // Phase 4: typed-parameter + computed pipelines (same as cmdDraft).
+  const typeCheck = normalizeTypedValues(unionPlaceholders, resolved);
+  if (!typeCheck.ok) {
+    for (const te of typeCheck.errors) {
+      err.write(paint(`error: type validation failed for "${te.key}": ${te.message}\n`, "red", err));
+    }
+    return EXIT.VALIDATION;
+  }
+  const computeCheck = computeValues(unionPlaceholders, resolved);
+  if (!computeCheck.ok) {
+    for (const ce of computeCheck.errors) {
+      err.write(paint(`error: computed value failed for "${ce.key}": ${ce.message}\n`, "red", err));
+    }
+    return EXIT.VALIDATION;
+  }
+
+  // Phase 5: substitute per template + write. Q3.2: any write failure
+  // exits with EXIT.IO; earlier successful writes are NOT rolled back
+  // (atomicity at the filesystem is best-effort).
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const outputText = substitute(e.input.body, e.cascade.placeholders, resolved, e.cascade.tier);
+    try {
+      // For .docx input with .docx output: round-trip via substituteDocxXml.
+      if (e.input.kind === "docx" && extname(e.output) === ".docx") {
+        const { xml: newXml, warnings: dw } = substituteDocxXml(
+          e.input.docxXml, e.cascade.placeholders, resolved, e.cascade.tier
+        );
+        if (dw.length) for (const w of dw) err.write(paint(`warning (entry ${i}): ${w}\n`, "yellow", err));
+        const buf = await writeDocxBuffer(e.input.path, newXml);
+        writeFileSync(e.output, buf);
+      } else {
+        writeFileSync(e.output, outputText, "utf8");
+      }
+    } catch (writeErr) {
+      err.write(paint(`error: bundle entry ${i} could not write ${e.output}: ${writeErr.message}\n`, "red", err));
+      return EXIT.IO;
+    }
+  }
+
+  if (!opts.silent && !opts.json) {
+    err.write(paint(`ok: wrote ${entries.length} document(s) — ${entries.map(e => e.output).join(", ")}\n`, "green", err));
+  }
+  if (opts.json) {
+    out.write(JSON.stringify({
+      ok: true,
+      outputs: entries.map(e => ({ template: e.input.path, output: e.output, tier: e.cascade.tier })),
+      resolved_keys: Object.keys(resolved),
+      sources,
+    }, null, 2) + "\n");
+  }
+  return EXIT.OK;
+}
+
 function describeInput(input) {
   if (input.path) return input.path;
   if (input.kind === "text") return "stdin";
@@ -2581,6 +2800,33 @@ export async function main(argv, io = {}) {
   if (opts.checkLlm) {
     const envObj = effectiveEnv(cwd, processEnv);
     return await runCheckLlm(envObj, out, err, { fetcher });
+  }
+
+  // v2 #6: bundle mode. `--bundle PATH` reads a bundle definition and
+  // orchestrates filling each entry's template with shared parameters.
+  // In bundle mode, no positional template arg is required (the bundle
+  // declares them).
+  if (opts.bundle) {
+    if (opts.positional.length > 0) {
+      err.write(paint(`error: --bundle does not take a positional template arg (the bundle declares them)\n`, "red", err));
+      return EXIT.IO;
+    }
+    let bundle, paramsObj, envObj, parties;
+    try {
+      bundle = loadBundle(opts.bundle);
+      paramsObj = loadParamsFile(opts.params);
+      envObj = effectiveEnv(cwd, processEnv);
+      parties = loadParties(opts.parties || null);
+    } catch (e) {
+      err.write(paint(`error: ${e.message}\n`, "red", err));
+      return e.exitCode || EXIT.IO;
+    }
+    try {
+      return await cmdBundle(opts, bundle, paramsObj, envObj, { fetcher, out, err, spawner, stdinReader, parties });
+    } catch (e) {
+      err.write(paint(`error: ${e.message}\n`, "red", err));
+      return e.exitCode || EXIT.IO;
+    }
   }
 
   if (opts.positional.length === 0) {

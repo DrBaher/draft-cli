@@ -451,6 +451,70 @@ substitution always uses string output.
 Programmatic API: `loadParties(path)`, `resolveRef(value, parties)`,
 `resolveRefs(resolved, sources, parties)`.
 
+### Multi-document bundles (v0.7.0, opt-in)
+
+`draft --bundle <bundle.json>` reads a bundle definition and fills
+multiple templates with one shared set of parameter values:
+
+```json
+{
+  "_meta": { "schema_version": 1 },
+  "outputs": [
+    { "template": "msa/v3.md",        "output": "out/msa.md" },
+    { "template": "order-form/v3.md", "output": "out/order-form.md" },
+    { "template": "dpa/v2.docx",      "output": "out/dpa.docx" }
+  ]
+}
+```
+
+```sh
+draft --bundle deal.bundle.json --params deal.json --parties parties.json
+```
+
+**Q3.1 locked:** the bundle file is a JSON object with an `outputs`
+array of `{template, output}` pairs. Each entry has its own
+`template` (filesystem path or `template-vault get` ref) and own
+`output` path. No alternative shorter DSL — JSON is unambiguous and
+extensible.
+
+**Q3.2 locked:** abort-all. Any pre-write error (no detection in an
+entry, missing required param across the union, type validation
+failure, computed-value failure, ref-resolution failure, positional
+mismatch, schema orphan) returns exit 4 **before any file is
+written**. The bundle either writes all `outputs` or writes none.
+Filesystem write errors mid-bundle exit 1; earlier successful
+writes are not rolled back (best-effort atomicity at the filesystem
+boundary).
+
+**Q3.3 locked:** schema union. A key declared in any template's
+schema, or detected as a canonical-key match without a schema,
+applies across the entire bundle. The same resolved value flows to
+every template that references the key. First-occurrence metadata
+wins (`type`, `format`, `currency`, `computed`, `positions`, etc.);
+templates with richer aliases for the same key contribute their
+aliases for detection in their own body but don't redefine the key.
+
+**Per-template detection independence:** each bundle entry runs the
+full T1–T5 cascade against its own body. Different entries can land
+on different tiers (e.g. MSA on T1 brackets, DPA on T3 highlights).
+Positional addressing on T1/T2 still works per entry.
+
+**`.docx` entries** with a `.docx` output path round-trip via
+`substituteDocxXml` + `writeDocxBuffer`, preserving runs/styles.
+Mixing text and `.docx` entries in the same bundle works.
+
+**`parties.json` refs** (v0.6.0) resolve inside bundles too — load
+the same parties file once via `--parties PATH` (or the CWD
+default), and ref strings in any bundle template's schema default
+or in shared `--params` expand against it.
+
+**`--json`** for bundles emits a structured result listing each
+entry's template, output path, and tier, plus the union of resolved
+keys and their sources.
+
+Programmatic API: `loadBundle(path)` parses + validates; `cmdBundle`
+runs the orchestration with the same IO contract as `cmdDraft`.
+
 ### Orphan handling (Q4 locked)
 
 Schema declares a key whose alias list matches no detected phrase →

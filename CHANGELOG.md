@@ -4,6 +4,55 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.7.0 — 2026-05-17
+
+### Added
+
+- **Multi-document bundles.** `draft --bundle <bundle.json>` reads a
+  bundle definition and fills multiple templates with the same set of
+  parameter values in one invocation:
+  ```json
+  {
+    "_meta": { "schema_version": 1 },
+    "outputs": [
+      { "template": "msa/v3.md",        "output": "out/msa.md" },
+      { "template": "order-form/v3.md", "output": "out/order-form.md" }
+    ]
+  }
+  ```
+  Each template runs through detection independently. Placeholders
+  across templates are unioned by key (so a key declared in any
+  template's schema applies to all — Q3.3 locked). Resolution,
+  typed-parameter normalization, and computed values all run once on
+  the union. Each output is then substituted using its own
+  template/tier and written to its own path. `parties.json` refs
+  (v0.6.0) resolve inside bundle entries too.
+- **Schema-union semantics.** A key declared/detected in any bundle
+  template applies to every template in the bundle. First-occurrence
+  metadata wins; resolved values flow to all templates that reference
+  the same key.
+- **`.docx` bundle entries** round-trip through `substituteDocxXml`
+  when the entry's `output` path has the `.docx` extension. Same
+  runs/styles preservation as single-doc `.docx` mode.
+- **New public API:** `loadBundle(path)`, `cmdBundle(opts, bundle,
+  paramsObj, envObj, io)`.
+
+### Decisions locked (V2_BRIEFS_REMAINING Q3.1–Q3.3)
+
+- **Q3.1 Bundle file format:** JSON object with `outputs` array of
+  `{template, output}` pairs. Each entry has its own output path,
+  enabling per-doc overrides without inventing a custom DSL.
+- **Q3.2 Partial-failure policy:** abort-all. Any pre-write error
+  (no detection in an entry, missing required param across the
+  union, type / computed / ref failure, positional mismatch, schema
+  orphan) exits 4 before any file is written. Write failures
+  mid-bundle exit 1; earlier successful writes are not rolled back
+  (best-effort atomicity at the filesystem boundary).
+- **Q3.3 Schema union semantics:** keys declared in any template's
+  schema (or detected as canonical-key matches without a schema)
+  apply across the bundle. Same value resolves into every template
+  that references the key.
+
 ## 0.6.0 — 2026-05-16
 
 ### Added
