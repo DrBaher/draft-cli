@@ -6,12 +6,12 @@
   <!-- folded corner -->
   <path d="M 320 100 L 380 160 L 320 160 Z"
         fill="#1f7d5d" stroke="#1f7d5d" stroke-width="16" stroke-linejoin="round"/>
-  <!-- left bracket of placeholder -->
-  <path d="M 195 220 L 175 220 L 175 320 L 195 320"
-        fill="none" stroke="#1f7d5d" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-  <!-- right bracket of placeholder -->
-  <path d="M 335 220 L 355 220 L 355 320 L 335 320"
-        fill="none" stroke="#1f7d5d" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-  <!-- substituted content between brackets, suggesting the placeholder is being filled -->
-  <rect x="210" y="262" width="110" height="18" rx="5" fill="#0e4a37"/>
+  <!-- bold left bracket of the placeholder -->
+  <path d="M 196 186 L 168 186 L 168 328 L 196 328"
+        fill="none" stroke="#1f7d5d" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- bold right bracket of the placeholder -->
+  <path d="M 316 186 L 344 186 L 344 328 L 316 328"
+        fill="none" stroke="#1f7d5d" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- the substituted value filling the placeholder -->
+  <rect x="214" y="234" width="84" height="46" rx="10" fill="#0e4a37"/>
 </svg>
