@@ -1,7 +1,7 @@
 {
   "name": "@drbaher/draft-cli",
   "version": "0.9.0",
-  "description": "Fill placeholders in a legal-document template with parameter values. Part of the contract-ops suite.",
+  "description": "Fill placeholders in a legal-document template with parameter values. Part of the contract-ops CLI suite.",
   "type": "module",
   "bin": {
     "draft": "./draft-cli.mjs"
@@ -34,11 +34,14 @@
     "templates",
     "nda",
     "placeholder",
-    "cli"
+    "cli",
+    "contract-ops",
+    "agent-first",
+    "legal-tech"
   ],
   "author": "DrBaher",
   "license": "MIT",
-  "homepage": "https://github.com/DrBaher/draft-cli",
+  "homepage": "https://cli.drbaher.com",
   "repository": {
     "type": "git",
     "url": "https://github.com/DrBaher/draft-cli.git"

@@ -71,14 +71,14 @@ draft --completion zsh > ~/.zsh/completions/_draft
 # ensure ~/.zsh/completions is in fpath, then: autoload -U compinit && compinit
 ```
 
-Completes flags, the `--syntax bracket|mustache` value, `--completion bash|zsh`, and file paths for `--params`, `--output`, `--dictionary`, `--parties`, `--bundle`, `--from-deal`.
+Completes flags, the `--syntax bracket|mustache` value, `--completion bash|zsh`, and file paths for `--params`, `--output`, `--dictionary`.
 
 ## What this gives you
 
 - **Five-tier detection cascade** — `[Title Case]` brackets / `{{mustache}}` / `.docx` highlights (yellow/green/cyan/magenta) / heuristic dictionary / optional LLM. First tier with hits wins; the rest are skipped. Deterministic through tier 4.
 - **`.docx` round-trip** — read a `.docx` template, fill placeholders, write `<basename>-filled.docx` with runs/styles/paragraph-breaks preserved. T3 highlight detection works against real templates (Common Paper, YC SAFE).
 - **Schema file** for canonical keys, alias phrases, defaults, required-ness, and the v2 fields below (`type`, `format`, `currency`, `computed`, `positions`). Without a schema, every detected bracketed phrase is treated as a required parameter.
-- **Typed parameters** — `type: date | money | party` validates and normalizes inputs before substitution. `"01/15/2027"` → `"January 15, 2027"`; `"$5M"` → `"$5,000,000.00"`. Bad inputs exit 4 with per-key error.
+- **Typed parameters** — `type: date | money | party` validates and normalizes inputs before substitution. `"2027-01-15"` → `"January 15, 2027"`; `"$5M"` → `"$5,000,000.00"`. Bad inputs exit 2 with per-key error.
 - **Computed placeholders** — derive one placeholder's value from another via date arithmetic: `{ "from": "effective_date", "op": "+", "value": "2 years" }`. Cycle detection at schema parse time.
 - **Positional addressing** — same placeholder text with different semantic roles, addressed by position. Validated against the YC SAFE `$[_____________] × 2` case.
 - **`parties.json` registry** — declare known parties once; schemas reference `ref:parties.<key>.<field>`. Eliminates duplicating party metadata across templates.
@@ -201,7 +201,7 @@ OPTIONS
   -V, --version          show version
 ```
 
-Exit codes: `0` ok · `1` i/o · `2` validation · `3` template-vault failure · `4` schema validation / typed parameter / computed / ref / positional · `5` llm failure.
+Exit codes: `0` ok · `1` i/o · `2` validation (incl. schema / typed parameter / computed / ref / positional) · `3` template-vault failure · `4` llm failure.
 
 ## LLM tier (env-gated, opt-in)
 

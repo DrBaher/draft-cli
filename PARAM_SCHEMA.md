@@ -241,7 +241,7 @@ and long are not mixable within one file.
 
 Long-form entries can declare `type`, with optional `format` (`date`)
 or `currency` (`money`). Inputs are validated and normalized between
-value resolution and substitution. Bad input → exit 4
+value resolution and substitution. Bad input → exit 2
 (`EXIT.VALIDATION`) with a per-key error message; all type errors are
 collected before exit so the user sees every issue at once.
 
@@ -364,7 +364,7 @@ not numeric indices.
 
 **Q1.2 locked:** count mismatch (schema declares N positions but
 detection finds M ≠ N occurrences of the alias) is a **hard error**
-(exit 4). The schema and the template are out of sync; silently filling
+(exit 2). The schema and the template are out of sync; silently filling
 or trimming hides the bug.
 
 **Q1.3 locked:** there is no bare-key CLI variant (`--<parent-key>
@@ -375,7 +375,7 @@ JSON keyed by role, or `--interactive`.
 **Tier constraint:** positional addressing only works at T1 (bracket)
 or T2 (mustache). T3/T4/T5 detection paths don't carry per-hit byte
 indices needed for position-specific substitution; if a positional
-schema entry's aliases are matched by those tiers, the command exits 4
+schema entry's aliases are matched by those tiers, the command exits 2
 with a clear error.
 
 **Validation:** at schema parse time, positions must be a non-empty
@@ -436,7 +436,7 @@ diverge from their original `parties.json` values.
 **Ref syntax:** `ref:parties.<party_key>.<field>` where both
 `<party_key>` and `<field>` match `[A-Za-z_][A-Za-z0-9_]*`. Malformed
 refs, unknown party keys, and unknown fields all surface as hard
-errors before substitution (exit 4).
+errors before substitution (exit 2).
 
 **Resolution order:** value resolution → ref expansion → typed-param
 normalization → computed values → substitute. Refs run before typed
@@ -480,7 +480,7 @@ extensible.
 **Q3.2 locked:** abort-all. Any pre-write error (no detection in an
 entry, missing required param across the union, type validation
 failure, computed-value failure, ref-resolution failure, positional
-mismatch, schema orphan) returns exit 4 **before any file is
+mismatch, schema orphan) returns exit 2 **before any file is
 written**. The bundle either writes all `outputs` or writes none.
 Filesystem write errors mid-bundle exit 1; earlier successful
 writes are not rolled back (best-effort atomicity at the filesystem
@@ -562,7 +562,7 @@ out of the network).
 
 **Provider missing:** if no LLM provider is configured (no
 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DRAFT_LLM_*` in env),
-`--from-deal` errors immediately with `EXIT.LLM` (exit 5) and a
+`--from-deal` errors immediately with `EXIT.LLM` (exit 4) and a
 clear message. Same for network / HTTP errors / non-JSON LLM
 responses.
 

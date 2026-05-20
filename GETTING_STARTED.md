@@ -6,7 +6,7 @@ A 10-minute walkthrough of the main flows. Assumes you have Node 18+.
 
 ```sh
 npm install -g @drbaher/draft-cli
-draft --version    # → draft-cli 0.1.0
+draft --version    # → draft-cli 0.9.0
 ```
 
 To try without installing globally:
@@ -249,7 +249,7 @@ is.
 ```sh
 template-vault get nda/house-mutual \
   | draft - --params deal.json \
-  | nda-review review - --playbook house \
+  | nda-review-cli review --file - --playbook house \
   | docx2pdf - draft.pdf
 ```
 

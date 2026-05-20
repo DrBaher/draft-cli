@@ -153,7 +153,7 @@ draft "$TEMPLATE" --params deal.json --output draft.md --json --why
 template-vault get nda/house-mutual \
   | draft - --params deal.json --json --no-llm \
   | jq -r '.output' \
-  | nda-review review - --playbook house --json
+  | nda-review-cli review --file - --playbook house
 ```
 
 `--no-llm` is recommended for agent-driven pipelines unless the agent has explicit license to invoke a network call. `draft-cli`'s T5 auto-runs only when env configures a provider; passing `--no-llm` disables it even then.
