@@ -268,7 +268,7 @@ const KNOWN_BOOLEAN = new Set([
 ]);
 
 const KNOWN_VALUE = new Set([
-  "--params", "--output", "-o", "--syntax", "--dictionary", "--completion", "--catalog", "--from-deal",
+  "--params", "--output", "-o", "--syntax", "--dictionary", "--completion", "--catalog", "--from-deal", "--bundle",
 ]);
 
 /**
@@ -474,6 +474,7 @@ export function getCatalog() {
       { name: "--output", aliases: ["-o"], arg: "PATH", help: "Write result to PATH (default: stdout)." },
       { name: "--syntax", arg: "KIND", choices: ["bracket", "mustache"], default: "bracket", help: "Placeholder syntax family." },
       { name: "--from-deal", arg: "PATH", help: "Infer param values from free-form prose via the LLM tier." },
+      { name: "--bundle", arg: "PATH", help: "Fill multiple templates from one bundle definition (declares its own templates + shared params)." },
       { name: "--interactive", aliases: ["-i"], type: "boolean", help: "Prompt for any missing required parameters." },
       { name: "--validate", type: "boolean", help: "Validate completeness; never writes output." },
       { name: "--list-placeholders", type: "boolean", help: "Per-template manifest of placeholders; pairs with --json." },
