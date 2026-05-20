@@ -268,7 +268,7 @@ const KNOWN_BOOLEAN = new Set([
 ]);
 
 const KNOWN_VALUE = new Set([
-  "--params", "--output", "-o", "--syntax", "--dictionary", "--completion",
+  "--params", "--output", "-o", "--syntax", "--dictionary", "--completion", "--catalog", "--from-deal",
 ]);
 
 /**
@@ -313,6 +313,8 @@ export function parseArgs(argv) {
     if (a === "--demo") { opts.demo = true; continue; }
     if (a === "--validate") { opts.validate = true; continue; }
     if (a === "--list-placeholders") { opts.listPlaceholders = true; continue; }
+    if (a === "--catalog") { opts.catalog = argv[++i] || "json"; continue; }
+    if (a.startsWith("--catalog=")) { opts.catalog = a.slice("--catalog=".length); continue; }
     if (a === "--why") { opts.why = true; continue; }
     if (a === "--json") { opts.json = true; continue; }
     if (a === "--interactive" || a === "-i") { opts.interactive = true; continue; }
@@ -440,12 +442,67 @@ OPTIONS
   --<param-name> VALUE  Set a parameter directly. Kebab -> snake_case.
   -h, --help            Show this help.
   -V, --version         Show version.
+  --catalog json        Machine-readable command + flag inventory (for agents).
 
 EXIT CODES
   0 ok   1 i/o error   2 validation   3 template-vault failure   4 llm failure
 
 Part of the contract-operations suite. See cli.drbaher.com.
 `;
+
+/**
+ * Machine-readable command + flag inventory, emitted by `draft --catalog json`.
+ * Mirrors the suite-wide discovery contract (nda-review-cli / docx2pdf-cli /
+ * sign-cli / template-vault-cli all answer `--catalog json`). draft has no
+ * subcommands, so this is a flag inventory.
+ */
+export function getCatalog() {
+  return {
+    name: "draft-cli",
+    bin: "draft",
+    version: VERSION,
+    description: "Agent-first placeholder-filler for legal-document templates.",
+    usage: [
+      "draft <template> [--params FILE] [--<param> VALUE]... [options]",
+      "draft <category>/<name>   (pulls via `template-vault get`)",
+      "draft -                   (template body on stdin)",
+      "draft <template> --list-placeholders --json",
+      "draft <template> --params FILE --validate",
+    ],
+    flags: [
+      { name: "--params", arg: "FILE", help: "JSON file of param values (snake_case keys)." },
+      { name: "--output", aliases: ["-o"], arg: "PATH", help: "Write result to PATH (default: stdout)." },
+      { name: "--syntax", arg: "KIND", choices: ["bracket", "mustache"], default: "bracket", help: "Placeholder syntax family." },
+      { name: "--from-deal", arg: "PATH", help: "Infer param values from free-form prose via the LLM tier." },
+      { name: "--interactive", aliases: ["-i"], type: "boolean", help: "Prompt for any missing required parameters." },
+      { name: "--validate", type: "boolean", help: "Validate completeness; never writes output." },
+      { name: "--list-placeholders", type: "boolean", help: "Per-template manifest of placeholders; pairs with --json." },
+      { name: "--diff", type: "boolean", help: "Show the substitution table without writing output." },
+      { name: "--why", type: "boolean", help: "Print a structured explanation to stderr." },
+      { name: "--json", type: "boolean", help: "Emit JSON to stdout (suppresses human messages)." },
+      { name: "--silent", aliases: ["-q"], type: "boolean", help: "Suppress all stderr output." },
+      { name: "--no-heuristic", type: "boolean", help: "Disable the tier-4 generic-name heuristic." },
+      { name: "--yes-heuristic", type: "boolean", help: "Substitute tier-4 matches without confirmation." },
+      { name: "--no-llm", type: "boolean", help: "Disable the tier-5 LLM even when configured." },
+      { name: "--llm", type: "boolean", help: "Assert an env/config-configured LLM; fail fast if none." },
+      { name: "--check-llm", type: "boolean", help: "One-token roundtrip to the configured provider." },
+      { name: "--strict-runs", type: "boolean", help: ".docx: skip placeholders spanning multiple runs (default merges)." },
+      { name: "--dictionary", arg: "PATH", help: "Override the bundled heuristic dictionary." },
+      { name: "--completion", arg: "bash|zsh", help: "Emit a shell completion script." },
+      { name: "--demo", type: "boolean", help: "Run the bundled zero-config demo." },
+      { name: "--catalog", arg: "json", help: "Print this catalog and exit (agents call at startup)." },
+      { name: "--help", aliases: ["-h"], type: "boolean", help: "Show usage and exit." },
+      { name: "--version", aliases: ["-V"], type: "boolean", help: "Print version and exit." },
+    ],
+    paramFlags: "Any unrecognized --<param-name> VALUE sets a template parameter directly (kebab → snake_case).",
+    discovery: {
+      catalog: "draft --catalog json",
+      placeholders: "draft <template> --list-placeholders --json",
+      validate: "draft <template> --params FILE --validate",
+    },
+    exitCodes: { "0": "ok", "1": "i/o error", "2": "validation", "3": "template-vault failure", "4": "llm failure" },
+  };
+}
 
 // ─── INPUT RESOLUTION ───────────────────────────────────────────────────────
 // Returns { kind: "text"|"docx", body: string, docxXml?: string, path: string|null }
@@ -3174,6 +3231,11 @@ export async function main(argv, io = {}) {
 
   if (opts.help) { out.write(HELP_TEXT); return EXIT.OK; }
   if (opts.version) { out.write(`draft-cli ${VERSION}\n`); return EXIT.OK; }
+  if (opts.catalog) {
+    if (opts.catalog !== "json") { err.write(`unknown --catalog format '${opts.catalog}'. Supported: json\n`); return EXIT.VALIDATION; }
+    out.write(JSON.stringify(getCatalog(), null, 2) + "\n");
+    return EXIT.OK;
+  }
   if (opts.completion) { out.write(completionScript(opts.completion)); return EXIT.OK; }
   if (opts.demo) { return runDemo(out, err); }
   if (opts.checkLlm) {

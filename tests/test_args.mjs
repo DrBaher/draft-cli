@@ -1,6 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseArgs, UsageError } from "../draft-cli.mjs";
+import { parseArgs, UsageError, getCatalog } from "../draft-cli.mjs";
+
+test("parseArgs recognizes --catalog json", () => {
+  assert.equal(parseArgs(["--catalog", "json"]).catalog, "json");
+  assert.equal(parseArgs(["--catalog=json"]).catalog, "json");
+});
+
+test("getCatalog: machine-readable flag inventory", () => {
+  const c = getCatalog();
+  assert.equal(c.name, "draft-cli");
+  assert.equal(c.bin, "draft");
+  assert.ok(Array.isArray(c.flags) && c.flags.length > 10);
+  assert.ok(c.flags.some(f => f.name === "--catalog"));
+  assert.ok(c.flags.some(f => f.name === "--list-placeholders"));
+  assert.equal(c.exitCodes["4"], "llm failure");
+});
 
 test("parseArgs handles all known booleans", () => {
   const o = parseArgs(["x.md", "--why", "--json", "--validate", "--no-heuristic", "--llm", "-i"]);
