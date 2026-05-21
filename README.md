@@ -41,6 +41,7 @@ draft --list-placeholders examples/cp-mutual-nda-coverpage.md
 | **An LLM agent** driving the CLI | [AGENTS.md](AGENTS.md) → `draft --list-placeholders --json` → [PARAM_SCHEMA.md](PARAM_SCHEMA.md) for the locked contract |
 | **A schema author** declaring typed / computed / positional placeholders | [PARAM_SCHEMA.md](PARAM_SCHEMA.md) §5 |
 | **A contributor** | [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md) |
+| **Adding a new CLI to the suite** | The [build-a-CLI playbook](https://cli.drbaher.com/build-a-cli) — the conventions every suite CLI follows |
 
 Concept deep-dives live in [PARAM_SCHEMA.md](PARAM_SCHEMA.md) (the v1 + v2 contract); architecture in [ARCHITECTURE.md](ARCHITECTURE.md); FAQ in [FAQ.md](FAQ.md).
 
