@@ -1,6 +1,6 @@
 {
   "name": "@drbaher/draft-cli",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Fill placeholders in a legal-document template with parameter values. Part of the contract-ops CLI suite.",
   "type": "module",
   "bin": {

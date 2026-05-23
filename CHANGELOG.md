@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.10.0 — 2026-05-23
+
+### Added
+- **`draft --catalog json`** — the suite-wide discovery contract
+  (`{name, bin, version, description, flags, exitCodes}`), so an agent learns
+  every flag at startup instead of hardcoding them.
+
+### Fixed
+- `--bundle` is now listed in `draft --catalog json` (it was accepted but
+  unlisted). Friendly first-run hint on a bare `draft` invocation (was a terse
+  error); exit-code, cross-CLI, and metadata doc accuracy.
+
 ## 0.9.0 — 2026-05-17
 
 ### Changed (default behavior)
