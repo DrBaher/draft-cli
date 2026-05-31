@@ -306,6 +306,18 @@ export function parseArgs(argv) {
     version: false,
     paramFlags: {}, // canonical_key -> value (set from --kebab-name VALUE)
   };
+  // Consume and return the value following a value-requiring flag, erroring if
+  // the flag is last or the next token is itself a flag (otherwise the next
+  // arg is silently swallowed as the value).
+  const takeValue = (flag, i) => {
+    const next = argv[i + 1];
+    // Reject a missing value or a following flag (`--x`/`-y`), but allow the
+    // bare `-` stdout/stdin sentinel, which is a legitimate value.
+    if (next === undefined || (next.startsWith("-") && next !== "-")) {
+      throw new UsageError(`${flag} requires a value`);
+    }
+    return next;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") { opts.help = true; continue; }
@@ -313,7 +325,10 @@ export function parseArgs(argv) {
     if (a === "--demo") { opts.demo = true; continue; }
     if (a === "--validate") { opts.validate = true; continue; }
     if (a === "--list-placeholders") { opts.listPlaceholders = true; continue; }
-    if (a === "--catalog") { opts.catalog = argv[++i] || "json"; continue; }
+    // `json` is the only catalog format; only consume the next positional if it
+    // is exactly that, so `draft --catalog template.txt` keeps template.txt as
+    // the input file rather than swallowing it as the (invalid) format.
+    if (a === "--catalog") { if (argv[i + 1] === "json") { opts.catalog = argv[++i]; } else { opts.catalog = "json"; } continue; }
     if (a.startsWith("--catalog=")) { opts.catalog = a.slice("--catalog=".length); continue; }
     if (a === "--why") { opts.why = true; continue; }
     if (a === "--json") { opts.json = true; continue; }
@@ -326,11 +341,11 @@ export function parseArgs(argv) {
     if (a === "--silent" || a === "-q") { opts.silent = true; continue; }
     if (a === "--diff") { opts.diff = true; continue; }
     if (a === "--strict-runs") { opts.strictRuns = true; continue; }
-    if (a === "--params") { opts.params = argv[++i]; continue; }
-    if (a === "--parties") { opts.parties = argv[++i]; continue; }
-    if (a === "--bundle") { opts.bundle = argv[++i]; continue; }
-    if (a === "--from-deal") { opts.fromDeal = argv[++i]; continue; }
-    if (a === "--output" || a === "-o") { opts.output = argv[++i]; continue; }
+    if (a === "--params") { opts.params = takeValue(a, i); i++; continue; }
+    if (a === "--parties") { opts.parties = takeValue(a, i); i++; continue; }
+    if (a === "--bundle") { opts.bundle = takeValue(a, i); i++; continue; }
+    if (a === "--from-deal") { opts.fromDeal = takeValue(a, i); i++; continue; }
+    if (a === "--output" || a === "-o") { opts.output = takeValue(a, i); i++; continue; }
     if (a === "--syntax") {
       const v = argv[++i];
       if (v !== "bracket" && v !== "mustache") {
@@ -339,7 +354,7 @@ export function parseArgs(argv) {
       opts.syntax = v;
       continue;
     }
-    if (a === "--dictionary") { opts.dictionary = argv[++i]; continue; }
+    if (a === "--dictionary") { opts.dictionary = takeValue(a, i); i++; continue; }
     if (a === "--completion") {
       const v = argv[++i];
       if (v !== "bash" && v !== "zsh") {
@@ -1331,6 +1346,14 @@ export function readDictionary(path) {
   try {
     const j = JSON.parse(readFileSync(path, "utf8"));
     if (!Array.isArray(j)) throw new Error("dictionary file must be a JSON array of strings");
+    // Every element must be a string: the tier-4 heuristic feeds each entry to
+    // escapeRegex (s.replace(...)), so a number/object would leak an internal
+    // "s.replace is not a function" TypeError instead of a clear error.
+    for (let idx = 0; idx < j.length; idx++) {
+      if (typeof j[idx] !== "string") {
+        throw new Error(`dictionary entries must be strings (entry ${idx} is ${typeof j[idx]})`);
+      }
+    }
     return j;
   } catch (err) {
     const e = new Error(`could not read dictionary ${path}: ${err.message}`);
@@ -1659,6 +1682,35 @@ export function loadBundle(path) {
  * @param {{ prompter?: (p: Placeholder) => Promise<string|null> }} [io]
  * @returns {Promise<ResolvedValues>}
  */
+/**
+ * Coerce a param value from an external source (params file, --from-deal LLM)
+ * to the string that gets substituted into the document. Strings pass through;
+ * finite numbers are stringified. Everything else — objects, arrays, `null`,
+ * booleans, `NaN`/`Infinity` — is rejected with a clear `EXIT.VALIDATION`
+ * error naming the key, rather than being silently coerced (an object would
+ * otherwise write the literal `[object Object]` into the legal document, an
+ * array would comma-join, `null` → `"null"`, all at exit 0).
+ *
+ * @param {string} key — canonical placeholder key (for the error message).
+ * @param {*} value — raw value from the external source.
+ * @param {string} source — human label of where the value came from.
+ * @returns {string}
+ * @throws {Error} with `.exitCode = EXIT.VALIDATION` on a non-string/number value.
+ */
+function coerceParamValue(key, value, source) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  const what = value === null ? "null"
+    : Array.isArray(value) ? "an array"
+    : typeof value === "object" ? "an object"
+    : typeof value === "boolean" ? "a boolean"
+    : typeof value === "number" ? `${value}` // NaN / Infinity
+    : typeof value;
+  const e = new Error(`param "${key}" from ${source} must be a string or number, got ${what}`);
+  e.exitCode = EXIT.VALIDATION;
+  throw e;
+}
+
 export async function resolveValues(placeholders, opts, paramsObj, { prompter = nodePrompter, inferred = null } = {}) {
   const resolved = {};
   const missing = [];
@@ -1670,13 +1722,13 @@ export async function resolveValues(placeholders, opts, paramsObj, { prompter = 
       continue;
     }
     if (Object.prototype.hasOwnProperty.call(paramsObj, p.key)) {
-      resolved[p.key] = String(paramsObj[p.key]);
+      resolved[p.key] = coerceParamValue(p.key, paramsObj[p.key], "params file");
       sources[p.key] = "params";
       continue;
     }
     // v2 #4: --from-deal LLM-inferred values, between --params and --interactive.
     if (inferred && Object.prototype.hasOwnProperty.call(inferred, p.key)) {
-      resolved[p.key] = String(inferred[p.key]);
+      resolved[p.key] = coerceParamValue(p.key, inferred[p.key], "--from-deal");
       sources[p.key] = "deal-llm";
       continue;
     }

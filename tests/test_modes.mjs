@@ -56,6 +56,43 @@ test("draft: alias-aware lookup matches multiple phrase forms", async () => {
   assert.match(out, /Between Acme \(aka Acme\) and Vendor/);
 });
 
+test("draft: object-valued param errors (exit 2), not [object Object] in output", async () => {
+  // Regression: a params-file value that isn't a string/number was silently
+  // String()-coerced into the legal document — an object → "[object Object]",
+  // an array → comma-join, null → "null" — all at exit 0 (silent data loss).
+  const dir = tmp();
+  const tpl = makeFile(dir, "x.md", "Between [Party A] and [Party B].");
+  const params = makeFile(dir, "p.json", JSON.stringify({
+    party_a: { legal_name: "Acme Corporation" }, // nested object, not a string
+    party_b: "Vendor Inc.",
+  }));
+  const { code, out, err } = await runMain(main, [tpl, "--params", params]);
+  assert.equal(code, 2, `expected VALIDATION exit 2; stderr: ${err}`);
+  assert.match(err, /party_a/);
+  assert.match(err, /string or number/);
+  assert.doesNotMatch(out, /\[object Object\]/);
+});
+
+test("draft: array / null / boolean param values are all rejected (exit 2)", async () => {
+  const dir = tmp();
+  const tpl = makeFile(dir, "x.md", "X is [Party A].");
+  for (const bad of [["a", "b"], null, true]) {
+    const params = makeFile(dir, "p.json", JSON.stringify({ party_a: bad }));
+    const { code, err } = await runMain(main, [tpl, "--params", params]);
+    assert.equal(code, 2, `value ${JSON.stringify(bad)} should be rejected; stderr: ${err}`);
+    assert.match(err, /string or number/);
+  }
+});
+
+test("draft: numeric param value is stringified (accepted, exit 0)", async () => {
+  const dir = tmp();
+  const tpl = makeFile(dir, "x.md", "Term is [Party A] years.");
+  const params = makeFile(dir, "p.json", JSON.stringify({ party_a: 2 }));
+  const { code, out } = await runMain(main, [tpl, "--params", params]);
+  assert.equal(code, 0);
+  assert.match(out, /Term is 2 years\./);
+});
+
 test("draft: missing required parameter errors with exit 2 and lists the missing keys", async () => {
   const { code, err } = await runMain(main, [FIXTURE, "--party-a", "Acme"]);
   assert.equal(code, 2);

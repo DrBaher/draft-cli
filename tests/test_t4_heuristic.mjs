@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { detectHeuristic, DEFAULT_HEURISTIC_DICT, readDictionary } from "../draft-cli.mjs";
+import { detectHeuristic, DEFAULT_HEURISTIC_DICT, readDictionary, EXIT } from "../draft-cli.mjs";
 import { tmp, makeFile } from "./_helpers.mjs";
 
 test("detectHeuristic finds bundled-dictionary phrases", () => {
@@ -47,6 +47,19 @@ test("readDictionary errors on non-array JSON", () => {
   const dir = tmp();
   const path = makeFile(dir, "dict.json", `{"not": "an array"}`);
   assert.throws(() => readDictionary(path), /array/);
+});
+
+test("readDictionary rejects non-string elements with a clear EXIT.IO error", () => {
+  // Regression: only Array.isArray was checked, so a numeric entry reached
+  // escapeRegex(phrase) → s.replace, leaking "s.replace is not a function".
+  const dir = tmp();
+  const path = makeFile(dir, "dict.json", `[99, 100]`);
+  assert.throws(() => readDictionary(path), (err) => {
+    assert.match(err.message, /dictionary entries must be strings/);
+    assert.ok(!/s\.replace is not a function/.test(err.message));
+    assert.equal(err.exitCode, EXIT.IO);
+    return true;
+  });
 });
 
 test("DEFAULT_HEURISTIC_DICT is non-empty and includes well-known placeholders", () => {

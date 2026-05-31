@@ -48,6 +48,30 @@ test("parseArgs errors when a param flag has no value", () => {
   assert.throws(() => parseArgs(["x.md", "--party-a"]), UsageError);
 });
 
+test("parseArgs errors when a value flag is missing its value (no silent swallow)", () => {
+  for (const flag of ["--params", "--output", "--parties", "--bundle", "--from-deal", "--dictionary"]) {
+    // flag is the last token → must error, not consume undefined.
+    assert.throws(() => parseArgs(["x.md", flag]), UsageError, `${flag} alone`);
+    // followed by another flag → must error, not swallow the next flag.
+    assert.throws(() => parseArgs(["x.md", flag, "--validate"]), UsageError, `${flag} then --validate`);
+  }
+});
+
+test("parseArgs: --catalog only consumes the next token when it is 'json'", () => {
+  // Greedy consumption used to eat the input file: `draft --catalog template.txt`
+  // dropped template.txt. Now only `json` is consumed.
+  const o = parseArgs(["--catalog", "template.txt"]);
+  assert.equal(o.catalog, "json");
+  assert.deepEqual(o.positional, ["template.txt"]);
+
+  const j = parseArgs(["--catalog", "json"]);
+  assert.equal(j.catalog, "json");
+  assert.deepEqual(j.positional, []);
+
+  const bare = parseArgs(["--catalog"]);
+  assert.equal(bare.catalog, "json");
+});
+
 test("parseArgs treats positionals correctly", () => {
   const o = parseArgs(["template.md"]);
   assert.deepEqual(o.positional, ["template.md"]);

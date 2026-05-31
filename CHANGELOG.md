@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.10.1 — 2026-05-31
+
+### Fixed
+- **Non-string param values are no longer silently coerced into the output
+  document.** A `--params`/`--from-deal` value that wasn't a string or number
+  (object, array, `null`, boolean) used to be `String()`-coerced and written
+  into the legal document at exit 0 — an object became the literal
+  `[object Object]`, an array comma-joined, `null` → `"null"` (silent data
+  loss). Such values now fail with a clear `EXIT.VALIDATION` (exit 2) error
+  naming the offending key; finite numbers are still accepted and stringified.
+- **Custom dictionaries with non-string elements** now error clearly
+  (`dictionary entries must be strings`, `EXIT.IO`) instead of leaking an
+  internal `s.replace is not a function` TypeError when the tier-4 heuristic
+  runs.
+- **Argument parsing robustness:** `--params`/`--output`/`--parties`/`--bundle`/
+  `--from-deal`/`--dictionary` now error if no value follows instead of
+  silently swallowing the next flag, and `--catalog` only consumes the next
+  token when it is exactly `json` (so `draft --catalog template.txt` keeps
+  `template.txt` as the input file). The bare `-` stdout sentinel is still
+  accepted as a value.
+
 ## 0.10.0 — 2026-05-23
 
 ### Added
