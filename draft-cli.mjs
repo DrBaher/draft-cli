@@ -1570,7 +1570,11 @@ export function resolveRef(value, parties) {
     throw new Error(`unknown field "${fieldKey}" on party "${partyKey}" in reference "${value}"`);
   }
   const out = party[fieldKey];
-  return out == null ? "" : String(out);
+  // Route the field value through the same string/finite-number-or-reject
+  // guard used for --params/--from-deal (0.10.1). Without this an object would
+  // write the literal `[object Object]` into the legal document, an array would
+  // comma-join, a boolean → "true", `null` → "" — all silently at exit 0.
+  return coerceParamValue(`parties.${partyKey}.${fieldKey}`, out, `reference "${value}"`);
 }
 
 /**
@@ -2182,7 +2186,9 @@ export function substitute(body, placeholders, values, tier) {
       } else {
         // Tier 3/4/5: replace literal phrase (whole-word) globally.
         const re = new RegExp(`(?<![A-Za-z0-9])${escapeRegex(h.inner)}(?![A-Za-z0-9])`, "g");
-        out = out.replace(re, v);
+        // Function replacer so `$&`/`$$`/`` $` ``/`$'` in the resolved value are
+        // inserted literally rather than interpreted as replacement patterns.
+        out = out.replace(re, () => v);
       }
     }
   }
@@ -2248,12 +2254,24 @@ export function substituteDocxXml(xml, placeholders, values, tier, opts = {}) {
       out = out.replace(/<w:t(\s[^>]*)?>([\s\S]*?)<\/w:t>/g, (match, attrs, content) => {
         const decoded = decodeXml(content);
         replaceRe.lastIndex = 0;
-        const replaced = decoded.replace(replaceRe, v);
+        // Function replacer so `$`-sequences in the resolved value are inserted
+        // literally rather than interpreted as `$&`/`$$`/`` $` ``/`$'` patterns.
+        const replaced = decoded.replace(replaceRe, () => v);
         if (replaced === decoded) return match;
         madeSubstitution = true;
         return `<w:t${attrs || ""}>${encodeXml(replaced)}</w:t>`;
       });
-      if (!madeSubstitution && buildRe(false).test(originalText)) {
+      // Only queue cross-run work if the phrase STILL exists in the current
+      // post-substitution text. assemble() emits one hit per occurrence, so a
+      // phrase appearing N times yields N hits; phase 1's global per-<w:t>
+      // replace already handled every single-run occurrence on the first hit,
+      // leaving madeSubstitution false for the 2nd..Nth. Testing pristine
+      // `originalText` (which still shows the phrase) wrongly queued those into
+      // `remaining`, and mergeAcrossRuns — unable to find an already-substituted
+      // phrase — emitted a spurious "spans multiple runs" warning. Testing the
+      // current `out` instead means a phrase fully handled in phase 1 is never
+      // re-queued; only genuinely cross-run occurrences remain.
+      if (!madeSubstitution && buildRe(false).test(docxXmlToText(out))) {
         remaining.push({ key: p.key, find, value: v, literal });
       }
     }

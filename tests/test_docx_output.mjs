@@ -246,13 +246,51 @@ test("substituteDocxXml: multiple occurrences of the same placeholder", () => {
   const xml = `<w:p>
     <w:r><w:t>[Party A] and [Party A] again.</w:t></w:r>
   </w:p>`;
+  // assemble() emits ONE hit per occurrence (draft-cli.mjs:1393-1394), so a
+  // phrase appearing twice produces two hit entries with occurrences:2 — NOT a
+  // single hit with occurrences:2. Mirror that real shape here; the old
+  // hand-built single-hit fixture hid the false-warning regression below.
   const placeholders = [{
     key: "party_a",
-    hits: [{ match: "[Party A]", inner: "Party A" }],
+    hits: [
+      { match: "[Party A]", inner: "Party A" },
+      { match: "[Party A]", inner: "Party A" },
+    ],
     occurrences: 2,
   }];
-  const { xml: out } = substituteDocxXml(xml, placeholders, { party_a: "Acme" }, "bracket");
+  const { xml: out, merged, skipped } = substituteDocxXml(xml, placeholders, { party_a: "Acme" }, "bracket");
   assert.match(out, /Acme and Acme again\./);
+  // Both occurrences live in a single run, so phase 1 handles them losslessly:
+  // neither merged (no cross-run work) nor skipped (no spurious warning).
+  assert.deepEqual(merged, []);
+  assert.deepEqual(skipped, []);
+});
+
+test("substituteDocxXml: single-run value with $ patterns is inserted literally", () => {
+  // Regression: a resolved value containing `$&`/`$$`/`` $` ``/`$'` must be
+  // written verbatim. The old `decoded.replace(replaceRe, v)` treated `v` as a
+  // replacement pattern, so e.g. "$&" expanded to the matched placeholder text.
+  const xml = `<w:p><w:r><w:t>Pay [Amount] now.</w:t></w:r></w:p>`;
+  const placeholders = [{
+    key: "amount",
+    hits: [{ match: "[Amount]", inner: "Amount" }],
+    occurrences: 1,
+  }];
+  const value = "$5 ($& $$ $` $')";
+  const { xml: out } = substituteDocxXml(xml, placeholders, { amount: value }, "bracket");
+  assert.equal(docxXmlToText(out).trim(), `Pay ${value} now.`);
+});
+
+test("substituteDocxXml: tier-3/5 value with $ patterns is inserted literally", () => {
+  const xml = `<w:p><w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr><w:t>Acme</w:t></w:r></w:p>`;
+  const placeholders = [{
+    key: "party",
+    hits: [{ match: "Acme", inner: "Acme" }],
+    occurrences: 1,
+  }];
+  const value = "Globex $& $$ Inc";
+  const { xml: out } = substituteDocxXml(xml, placeholders, { party: value }, "docx-highlight");
+  assert.equal(docxXmlToText(out).trim(), value);
 });
 
 test("substituteDocxXml: tier-3 word-boundary match excludes substrings", () => {

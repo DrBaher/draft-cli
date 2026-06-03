@@ -103,9 +103,27 @@ test("resolveRef throws on unknown field", () => {
     /unknown field "cik" on party "acme"/);
 });
 
-test("resolveRef coerces non-string fields to string", () => {
+test("resolveRef stringifies finite-number fields", () => {
   const parties = { acme: { name: "Acme", cik: 1234567 } };
   assert.equal(resolveRef("ref:parties.acme.cik", parties), "1234567");
+});
+
+test("resolveRef rejects non-string/non-finite-number fields with EXIT.VALIDATION", () => {
+  // Regression (0.10.1 left ref: raw): an object field used to write the
+  // literal "[object Object]" into the legal document at exit 0; an array
+  // comma-joined; a boolean → "true"; null → "". Route through the same guard
+  // as --params/--from-deal so each is rejected with a clear validation error.
+  const cases = [
+    [{ acme: { addr: { city: "DE" } } }, "ref:parties.acme.addr", /must be a string or number, got an object/],
+    [{ acme: { tags: ["a", "b"] } }, "ref:parties.acme.tags", /must be a string or number, got an array/],
+    [{ acme: { active: true } }, "ref:parties.acme.active", /must be a string or number, got a boolean/],
+    [{ acme: { mid: null } }, "ref:parties.acme.mid", /must be a string or number, got null/],
+  ];
+  for (const [parties, ref, re] of cases) {
+    let caught;
+    assert.throws(() => resolveRef(ref, parties), (err) => { caught = err; return re.test(err.message); }, `${ref}`);
+    assert.equal(caught.exitCode, 2, `${ref} should set EXIT.VALIDATION`);
+  }
 });
 
 // ── resolveRefs (batch + sources awareness) ────────────────────────────────

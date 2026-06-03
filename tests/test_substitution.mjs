@@ -42,6 +42,27 @@ test("substitute for heuristic/docx tiers uses whole-word regex", () => {
   assert.match(result, /REAL here\. AcmeCorp elsewhere\. REAL again/);
 });
 
+test("substitute: bracket value with $ patterns is inserted literally", () => {
+  // Regression: replaceAll uses split/join so it was already safe, but assert
+  // the contract — `$&`/`$$` in the value must not be interpreted.
+  const body = "Pay [amount].";
+  const placeholders = [{ key: "amount", hits: [{ match: "[amount]", inner: "amount" }] }];
+  const value = "$5 ($& $$ done)";
+  const result = substitute(body, placeholders, { amount: value }, "bracket");
+  assert.equal(result, `Pay ${value}.`);
+});
+
+test("substitute: heuristic/docx value with $ patterns is inserted literally", () => {
+  // Regression: the tier-3/4/5 `out.replace(re, v)` treated `v` as a
+  // replacement pattern; `$&` expanded to the matched phrase. Now a function
+  // replacer inserts the value verbatim.
+  const body = "Acme Corp signs.";
+  const placeholders = [{ key: "acme_corp", hits: [{ match: "Acme Corp", inner: "Acme Corp" }] }];
+  const value = "$& $$ $` $' Ltd";
+  const result = substitute(body, placeholders, { acme_corp: value }, "heuristic");
+  assert.equal(result, `${value} signs.`);
+});
+
 test("resolveValues: CLI flag wins over JSON file", async () => {
   const opts = parseArgs(["x", "--party-a", "FromCLI"]);
   const placeholders = [{ key: "party_a", required: true, default: null, aliases: ["Party A"] }];
