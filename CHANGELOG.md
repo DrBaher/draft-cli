@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.10.2 — 2026-06-03
+
+Robustness/correctness fixes from a follow-up source audit.
+
+### Fixed
+- **`ref:` party-field values are no longer silently coerced.** `resolveRef` now routes
+  values through `coerceParamValue`, so an object/array/boolean/`null` is rejected with
+  `EXIT.VALIDATION` instead of being `String()`-coerced (`[object Object]`, comma-joins,
+  `"true"`, `""`) into the document at exit 0. The 0.10.1 fix had left this sibling raw.
+- **`$`-patterns in resolved values are inserted literally.** `substitute` and
+  `substituteDocxXml` use a function replacer so `$&`/`$$`/`` $` ``/`$'` in a value are
+  no longer interpreted as replacement patterns.
+- **No more spurious "spans multiple runs" warning.** `substituteDocxXml` queues
+  cross-run work only when the phrase still exists post-substitution, so a phrase
+  occurring N times no longer re-queues the 2nd..Nth hit.
+- **`--version`/`--catalog` now report the real version** (`VERSION` had drifted to
+  `0.10.0` while the package was `0.10.1`).
+
 ## 0.10.1 — 2026-05-31
 
 ### Fixed
